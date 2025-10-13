@@ -1,0 +1,8 @@
+{
+    "name": "agent-sandbox",
+    "build": { "dockerfile": "Dockerfile", "context": ".." },
+    "remoteUser": "node",
+    "postCreateCommand": "corepack enable && pnpm --version || npm install -g pnpm",
+    "forwardPorts": [4000]
+  }
+  
