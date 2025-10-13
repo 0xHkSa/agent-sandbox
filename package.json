@@ -7,7 +7,9 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "tsx src/index.ts",
     "dev:server": "tsx src/server.ts",
-    "cli": "tsx src/cli.ts"
+    "cli": "tsx src/cli.ts",
+    "dev:mcp": "tsx src/mcp/server.mcp.ts",
+    "mcp:server": "tsx src/mcp/server.mcp.ts"
   },
   "keywords": [],
   "author": "",
@@ -22,6 +24,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",
     "axios": "^1.12.2",
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "zod": "^3.25.76"
   }
 }
