@@ -1,4 +1,6 @@
+import "dotenv/config";
 import { getWeather, getSurf, computeOutdoorIndex } from "./mcp/tools.js";
+import { askAgent } from "./agent/gemini-agent.js";
 import express from "express";
 
 const app = express();
@@ -7,6 +9,14 @@ const PORT = Number(process.env.PORT || 4000);
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "agent-sandbox", version: "0.1.0" });
+});
+
+app.get("/debug", (_req, res) => {
+  res.json({
+    hasGeminiKey: !!process.env.GEMINI_API_KEY,
+    nodeEnv: process.env.NODE_ENV,
+    cwd: process.cwd()
+  });
 });
 
 app.listen(PORT, "0.0.0.0", () => {
@@ -54,5 +64,36 @@ app.post("/tool/getOutdoorIndex", async (req, res) => {
     res.json({ ok:true, data: out });
   } catch (e) {
     res.status(502).json({ ok:false, error: (e&&e.message)||"outdoor index failed" });
+  }
+});
+
+// AI Agent endpoint - The magic happens here!
+app.post("/ask", async (req, res) => {
+  const question = String(req.body?.question || "").trim();
+  
+  // Validation
+  if (!question) {
+    return res.status(400).json({ ok: false, error: "Question required" });
+  }
+  if (question.length > 500) {
+    return res.status(400).json({ ok: false, error: "Question too long (max 500 characters)" });
+  }
+  
+  try {
+    console.log(`\n🌴 New question from user: "${question}"`);
+    const answer = await askAgent(question);
+    
+    res.json({ 
+      ok: true, 
+      question,
+      answer,
+      timestamp: new Date().toISOString()
+    });
+  } catch (e: any) {
+    console.error("Error in /ask:", e);
+    res.status(500).json({ 
+      ok: false, 
+      error: "Sorry, I had trouble processing that. Please try again!" 
+    });
   }
 });

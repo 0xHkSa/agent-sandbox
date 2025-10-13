@@ -13,6 +13,7 @@ dist/
 # Planning docs (internal only)
 PLAN.md
 NOTES.md
+HOW_IT_WORKS.md
 
 # Logs
 *.log
