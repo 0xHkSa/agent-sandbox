@@ -6,6 +6,34 @@ import express from "express";
 import rateLimit from "express-rate-limit";
 
 const app = express();
+
+// CORS Middleware - Manual implementation (more reliable than package)
+app.use((req, res, next) => {
+  const allowedOrigins = ['http://localhost:3000', 'http://127.0.0.1:3000'];
+  const origin = req.headers.origin;
+  
+  console.log('[CORS] Request:', req.method, req.path, 'Origin:', origin);
+  
+  if (origin && allowedOrigins.includes(origin)) {
+    console.log('[CORS] Setting headers for:', origin);
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+  } else {
+    console.log('[CORS] Origin not allowed or missing');
+  }
+  
+  // Handle preflight
+  if (req.method === 'OPTIONS') {
+    console.log('[CORS] Handling OPTIONS preflight');
+    res.sendStatus(204);
+    return;
+  }
+  
+  next();
+});
+
 app.use(express.json());
 const PORT = Number(process.env.PORT || 4000);
 
@@ -43,14 +71,10 @@ app.get("/debug", (_req, res) => {
   });
 });
 
-app.listen(PORT, "0.0.0.0", () => {
-  logger.info(`API server listening on port ${PORT}`, { port: PORT });
-});
-
-
 import { findSpot } from "./utils/spots.js";
 
 app.post("/tool/resolveSpot", (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', 'http://localhost:3000');
   const spot = String(req.body?.spot ?? "");
   const match = findSpot(spot);
   if (!match) return res.status(404).json({ ok:false, error:"spot not found"});
@@ -93,6 +117,10 @@ app.post("/tool/getOutdoorIndex", async (req, res) => {
 
 // AI Agent endpoint - The magic happens here!
 app.post("/ask", async (req, res) => {
+  // Manual CORS headers (for debugging)
+  res.setHeader('Access-Control-Allow-Origin', 'http://localhost:3000');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  
   const question = String(req.body?.question || "").trim();
   
   // Validation
@@ -130,4 +158,10 @@ app.post("/ask", async (req, res) => {
       error: "Sorry, I had trouble processing that. Please try again!" 
     });
   }
+});
+
+// Start server (MUST be at the end after all routes are defined!)
+app.listen(PORT, "0.0.0.0", () => {
+  logger.info(`API server listening on port ${PORT}`, { port: PORT });
+  console.log(`[server] Ready! CORS enabled for http://localhost:3000`);
 });

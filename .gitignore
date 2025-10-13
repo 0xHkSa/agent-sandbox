@@ -12,10 +12,10 @@ out/
 .env
 .env.local
 
-# Planning docs (internal only)
+# Planning docs (internal only - machine-specific)
 PLAN.md
 NOTES.md
-HOW_IT_WORKS.md
+CONTEXT.md
 
 # Logs
 logs/
