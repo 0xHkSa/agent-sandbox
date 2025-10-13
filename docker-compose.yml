@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  # MCP Server
+  mcp-server:
+    build: .
+    container_name: hawaii-mcp
+    environment:
+      - NODE_ENV=production
+      - MCP_PORT=4100
+    ports:
+      - "4100:4100"
+    command: ["pnpm", "mcp:server"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4100/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # API Server
+  api-server:
+    build: .
+    container_name: hawaii-api
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - MCP_PORT=4100
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    ports:
+      - "4000:4000"
+    command: ["pnpm", "dev:server"]
+    depends_on:
+      - mcp-server
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+

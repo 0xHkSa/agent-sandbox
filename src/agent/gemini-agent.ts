@@ -100,29 +100,36 @@ export async function askAgent(question: string): Promise<string> {
 
 **USER QUESTION:** "${question}"
 
-**CRITICAL: You MUST call ALL FOUR tools for any Hawaii location question!**
+**YOUR TASK:** Analyze the question and call ONLY the tools needed to answer it.
 
-**Required tools for ANY Hawaii location query:**
-1. resolveSpot - get coordinates
-2. getWeather - get temperature, wind, precipitation  
-3. getSurf - get wave height, period, direction
-4. getOutdoorIndex - get comfort score
+**Available tools:**
+1. **resolveSpot** - Convert location name to coordinates (ALWAYS call first if location mentioned)
+2. **getWeather** - Get temperature, wind, precipitation (for weather questions)
+3. **getSurf** - Get wave height, period, direction (for surf/wave questions)
+4. **getOutdoorIndex** - Get 0-10 outdoor comfort score (for "should I" or "conditions" questions)
 
-**Response format - include ALL 4 tools:**
-[
-  {"tool": "resolveSpot", "args": {"spot": "Waikiki"}},
-  {"tool": "getWeather", "args": {"lat": 21.281, "lon": -157.8374}},
-  {"tool": "getSurf", "args": {"lat": 21.281, "lon": -157.8374}},
-  {"tool": "getOutdoorIndex", "args": {"lat": 21.281, "lon": -157.8374}}
-]
+**Decision guide:**
+- "What's the weather?" → resolveSpot + getWeather
+- "How are the waves?" → resolveSpot + getSurf
+- "Should I surf?" → resolveSpot + getWeather + getSurf + getOutdoorIndex (comprehensive)
+- "What's the temperature?" → resolveSpot + getWeather
+- "Overall conditions?" → resolveSpot + getWeather + getSurf + getOutdoorIndex
 
-**Known coordinates (use these):**
+**Known coordinates (use when mentioned):**
 - Waikiki: lat=21.281, lon=-157.8374
 - North Shore: lat=21.6649, lon=-158.0532  
 - Honolulu: lat=21.3069, lon=-157.8583
 - Kailua: lat=21.4022, lon=-157.7394
 
-**Output ONLY the JSON array with all 4 tool calls. No other text.**`;
+**Output ONLY a JSON array of tool calls. Examples:**
+
+For "What's the weather in Waikiki?":
+[{"tool": "resolveSpot", "args": {"spot": "Waikiki"}}, {"tool": "getWeather", "args": {"lat": 21.281, "lon": -157.8374}}]
+
+For "How are the waves at North Shore?":
+[{"tool": "resolveSpot", "args": {"spot": "North Shore"}}, {"tool": "getSurf", "args": {"lat": 21.6649, "lon": -158.0532}}]
+
+Your JSON array:`;
 
     const planResult = await model.generateContent(planningPrompt);
     const planText = planResult.response.text();
@@ -167,42 +174,67 @@ export async function askAgent(question: string): Promise<string> {
       }
     }
     
-    // Smart enhancement: If we got coordinates but didn't call all tools, call them now
+    // Smart enhancement: Add missing tools based on question intent
     if (resolvedCoords) {
-      const hasAllTools = ["getWeather", "getSurf", "getOutdoorIndex"]
-        .every(tool => toolResults.some(r => r.tool === tool));
+      const questionLower = question.toLowerCase();
       
-      if (!hasAllTools) {
-        console.log("🔧 Auto-completing with remaining Hawaii outdoor data tools...");
+      // Add surf if question mentions waves/surf but getSurf wasn't called
+      if ((questionLower.includes('wave') || questionLower.includes('surf')) && 
+          !toolResults.some(r => r.tool === "getSurf")) {
+        console.log("🔧 Adding getSurf based on question...");
+        try {
+          const result = await callMCPTool("getSurf", resolvedCoords);
+          toolResults.push({ tool: "getSurf", args: resolvedCoords, result });
+          console.log(`✅ getSurf result:`, JSON.stringify(result).substring(0, 200));
+        } catch (error: any) {
+          console.error(`❌ getSurf failed:`, error.message);
+        }
+      }
+      
+      // Add weather if question mentions weather/temperature but getWeather wasn't called
+      if ((questionLower.includes('weather') || questionLower.includes('temperature') || questionLower.includes('temp')) &&
+          !toolResults.some(r => r.tool === "getWeather")) {
+        console.log("🔧 Adding getWeather based on question...");
+        try {
+          const result = await callMCPTool("getWeather", resolvedCoords);
+          toolResults.push({ tool: "getWeather", args: resolvedCoords, result });
+          console.log(`✅ getWeather result:`, JSON.stringify(result).substring(0, 200));
+        } catch (error: any) {
+          console.error(`❌ getWeather failed:`, error.message);
+        }
+      }
+      
+      // Add outdoor index + related tools for comprehensive questions
+      const needsComprehensive = 
+        (questionLower.includes('should') && (questionLower.includes('surf') || questionLower.includes('go'))) ||
+        questionLower.includes('conditions') ||
+        questionLower.includes('overall');
+      
+      if (needsComprehensive) {
+        console.log("🔧 Comprehensive question - adding all relevant tools...");
         
         if (!toolResults.some(r => r.tool === "getWeather")) {
-          console.log(`🔧 Calling tool: getWeather with args:`, resolvedCoords);
           try {
             const result = await callMCPTool("getWeather", resolvedCoords);
             toolResults.push({ tool: "getWeather", args: resolvedCoords, result });
-            console.log(`✅ getWeather result:`, JSON.stringify(result).substring(0, 200));
           } catch (error: any) {
             console.error(`❌ getWeather failed:`, error.message);
           }
         }
         
         if (!toolResults.some(r => r.tool === "getSurf")) {
-          console.log(`🔧 Calling tool: getSurf with args:`, resolvedCoords);
           try {
             const result = await callMCPTool("getSurf", resolvedCoords);
             toolResults.push({ tool: "getSurf", args: resolvedCoords, result });
-            console.log(`✅ getSurf result:`, JSON.stringify(result).substring(0, 200));
           } catch (error: any) {
             console.error(`❌ getSurf failed:`, error.message);
           }
         }
         
         if (!toolResults.some(r => r.tool === "getOutdoorIndex")) {
-          console.log(`🔧 Calling tool: getOutdoorIndex with args:`, resolvedCoords);
           try {
             const result = await callMCPTool("getOutdoorIndex", resolvedCoords);
             toolResults.push({ tool: "getOutdoorIndex", args: resolvedCoords, result });
-            console.log(`✅ getOutdoorIndex result:`, JSON.stringify(result).substring(0, 200));
           } catch (error: any) {
             console.error(`❌ getOutdoorIndex failed:`, error.message);
           }
@@ -218,21 +250,40 @@ export async function askAgent(question: string): Promise<string> {
 **TOOL RESULTS:**
 ${toolResults.map(r => `${r.tool}: ${JSON.stringify(r.result || r.error, null, 2)}`).join('\n\n')}
 
-**YOUR TASK:**
-Based on the tool results above, provide a helpful, friendly answer to the user's question.
+**CRITICAL: You MUST respond in 2-3 sentences MAX. Anything longer will be rejected.**
 
-- Be specific and reference actual data from the tools
-- Give actionable recommendations
-- Warn about safety if needed (e.g., waves too big)
-- Keep it conversational and helpful
-- 2-4 paragraphs max
+**FORMAT (FOLLOW EXACTLY):**
+Sentence 1: Yes/No + key recommendation
+Sentence 2: Weather/wave data (temp, wave height, wind, outdoor score)
+Sentence 3 (optional): One brief tip or caution
 
-Your response:`;
+**EXAMPLES YOU MUST COPY:**
+✅ "Yes, great surf today! Waikiki has 1m waves (3ft), 26°C, light 6km/h wind, outdoor score 10/10. Perfect for beginners."
+
+✅ "Not ideal. North Shore has rough 2m waves, 15km/h wind, score 6/10. Try Waikiki instead or wait for calmer conditions."
+
+✅ "Decent conditions. 25°C, 0.8m waves, 8km/h wind, score 8/10."
+
+**FORBIDDEN (DO NOT USE):**
+❌ "Aloha! I'd be happy to..."
+❌ "Looking to surf? Here's the scoop..."
+❌ "The current weather is absolutely beautiful..."
+❌ "Remember to stay hydrated..."
+❌ ANY paragraph longer than 3 sentences
+
+Your 2-3 sentence response:`;
 
     const answerResult = await model.generateContent(answerPrompt);
-    const answer = answerResult.response.text();
+    let answer = answerResult.response.text().trim();
     
-    console.log("💬 AI Answer:", answer.substring(0, 200) + "...\n");
+    // Force brevity: Keep only first 3 sentences if too long
+    const sentences = answer.split(/(?<=[.!?])\s+/).filter(s => s.trim());
+    if (sentences.length > 4) {
+      console.log("⚠️  Response too long, keeping first 3 sentences...");
+      answer = sentences.slice(0, 3).join(' ');
+    }
+    
+    console.log("💬 AI Answer:", answer);
     
     return answer;
     
@@ -241,5 +292,38 @@ Your response:`;
     console.error("❌ Full error:", error);
     return "I'm having trouble processing that request right now. Please try asking about Hawaii surf or beach conditions!";
   }
+}
+
+// Helper function to format response as bullet points (optional)
+export function formatAsBullets(answer: string, toolResults: any[]): string {
+  const bullets: string[] = [];
+  
+  // Extract key data from tool results
+  for (const result of toolResults) {
+    if (result.tool === "getWeather" && result.result?.current) {
+      const c = result.result.current;
+      bullets.push(`🌡️ Temperature: ${c.temperature_2m}°C (feels like ${c.apparent_temperature}°C)`);
+      if (c.precipitation > 0) bullets.push(`🌧️ Rain: ${c.precipitation}mm`);
+      bullets.push(`💨 Wind: ${c.wind_speed_10m} km/h`);
+    }
+    
+    if (result.tool === "getSurf" && result.result?.hourly) {
+      const h = result.result.hourly;
+      if (h.wave_height?.[0]) {
+        bullets.push(`🌊 Waves: ${h.wave_height[0]}m (${(h.wave_height[0] * 3.28).toFixed(1)}ft)`);
+        if (h.wave_period?.[0]) bullets.push(`⏱️ Period: ${h.wave_period[0]}s`);
+      }
+    }
+    
+    if (result.tool === "getOutdoorIndex" && result.result) {
+      bullets.push(`☀️ Outdoor Score: ${result.result.index}/10 - ${result.result.note}`);
+    }
+  }
+  
+  if (bullets.length === 0) return answer;
+  
+  // Return bullet format
+  const recommendation = answer.split(/[.!?]/)[0] + '.';
+  return `${recommendation}\n\n${bullets.join('\n')}`;
 }
 
