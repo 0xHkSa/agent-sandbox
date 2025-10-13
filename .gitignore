@@ -10,6 +10,10 @@ dist/
 .env
 .env.local
 
+# Planning docs (internal only)
+PLAN.md
+NOTES.md
+
 # Logs
 *.log
 npm-debug.log*
