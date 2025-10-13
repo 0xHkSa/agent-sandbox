@@ -5,6 +5,8 @@ node_modules/
 # Build outputs
 dist/
 *.tsbuildinfo
+.next/
+out/
 
 # Environment
 .env
