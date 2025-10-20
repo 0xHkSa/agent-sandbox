@@ -293,6 +293,11 @@ Sentence 1: Yes/No + key recommendation
 Sentence 2: Weather/wave data (temp in °F, wave height in feet, wind in mph, outdoor score)
 Sentence 3 (optional): One brief tip, caution, or access restriction (e.g., "Bellows requires military ID", "Hanauma Bay needs reservations")
 
+**CRITICAL TEMPERATURE RULE:**
+- ALWAYS use temperature_fahrenheit from current_converted (NOT temperature_2m from current)
+- ALWAYS use wind_speed_mph from current_converted (NOT wind_speed_10m from current)
+- ALWAYS use wave_height_feet from hourly_converted (NOT wave_height from hourly)
+
 **EXAMPLES YOU MUST COPY:**
 ✅ "Yes, great surf today! Waikiki has 3ft waves, 79°F, light 4mph wind, outdoor score 10/10. Perfect for beginners."
 
@@ -336,17 +341,17 @@ export function formatAsBullets(answer: string, toolResults: any[]): string {
   
   // Extract key data from tool results
   for (const result of toolResults) {
-    if (result.tool === "getWeather" && result.result?.current) {
-      const c = result.result.current;
-      bullets.push(`🌡️ Temperature: ${c.temperature_2m}°C (feels like ${c.apparent_temperature}°C)`);
-      if (c.precipitation > 0) bullets.push(`🌧️ Rain: ${c.precipitation}mm`);
-      bullets.push(`💨 Wind: ${c.wind_speed_10m} km/h`);
+    if (result.tool === "getWeather" && result.result?.current_converted) {
+      const c = result.result.current_converted;
+      bullets.push(`🌡️ Temperature: ${c.temperature_fahrenheit}°F (feels like ${c.apparent_temperature_fahrenheit}°F)`);
+      if (c.precipitation_mm > 0) bullets.push(`🌧️ Rain: ${c.precipitation_mm}mm`);
+      bullets.push(`💨 Wind: ${c.wind_speed_mph} mph`);
     }
     
-    if (result.tool === "getSurf" && result.result?.hourly) {
-      const h = result.result.hourly;
-      if (h.wave_height?.[0]) {
-        bullets.push(`🌊 Waves: ${h.wave_height[0]}m (${(h.wave_height[0] * 3.28).toFixed(1)}ft)`);
+    if (result.tool === "getSurf" && result.result?.hourly_converted) {
+      const h = result.result.hourly_converted;
+      if (h.wave_height_feet?.[0]) {
+        bullets.push(`🌊 Waves: ${h.wave_height_feet[0].toFixed(1)}ft`);
         if (h.wave_period?.[0]) bullets.push(`⏱️ Period: ${h.wave_period[0]}s`);
       }
     }

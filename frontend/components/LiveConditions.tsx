@@ -45,7 +45,9 @@ export default function LiveConditions() {
         setConditions({
           spot: spotData.data.name,
           weather: weatherData.data?.current,
+          weather_converted: weatherData.data?.current_converted,
           surf: surfData.data?.hourly,
+          surf_converted: surfData.data?.hourly_converted,
         });
       }
     } catch (error) {
@@ -70,13 +72,13 @@ export default function LiveConditions() {
 
   if (!conditions) return null;
 
-  const { weather, surf } = conditions;
+  const { weather, weather_converted, surf, surf_converted } = conditions;
   const waveHeight = surf?.wave_height?.[0];
   const wavePeriod = surf?.wave_period?.[0];
 
   return (
     <div className="bg-white rounded-xl shadow-xl border border-gray-100 overflow-hidden">
-      <div className="bg-gradient-to-r from-blue-500 to-teal-500 px-6 py-4">
+      <div className="bg-gradient-to-r from-gray-800 to-gray-600 px-6 py-4">
         <h3 className="text-2xl font-bold text-white">📍 Live Conditions - {conditions.spot}</h3>
       </div>
       
@@ -86,11 +88,11 @@ export default function LiveConditions() {
           <div className="text-center">
             <div className="text-4xl mb-2">🌡️</div>
             <div className="text-3xl font-bold text-gray-900">
-              {weather?.current_converted?.temperature_fahrenheit || weather?.temperature_2m}°F
+              {weather_converted?.temperature_fahrenheit || weather?.temperature_2m}°F
             </div>
             <div className="text-sm text-gray-500 mt-1">Temperature</div>
             <div className="text-xs text-gray-400 mt-1">
-              Feels like {weather?.current_converted?.apparent_temperature_fahrenheit || weather?.apparent_temperature}°F
+              Feels like {weather_converted?.apparent_temperature_fahrenheit || weather?.apparent_temperature}°F
             </div>
           </div>
 
@@ -98,7 +100,7 @@ export default function LiveConditions() {
           <div className="text-center">
             <div className="text-4xl mb-2">💨</div>
             <div className="text-3xl font-bold text-gray-900">
-              {weather?.current_converted?.wind_speed_mph || weather?.wind_speed_10m} <span className="text-lg">mph</span>
+              {weather_converted?.wind_speed_mph || weather?.wind_speed_10m} <span className="text-lg">mph</span>
             </div>
             <div className="text-sm text-gray-500 mt-1">Wind Speed</div>
             <div className="text-xs text-gray-400 mt-1">
@@ -110,7 +112,7 @@ export default function LiveConditions() {
           <div className="text-center">
             <div className="text-4xl mb-2">🌊</div>
             <div className="text-3xl font-bold text-gray-900">
-              {surf?.hourly_converted?.wave_height_feet?.[0] || (waveHeight ? (waveHeight * 3.28).toFixed(1) : 'N/A')}ft
+              {surf_converted?.wave_height_feet?.[0] || (waveHeight ? (waveHeight * 3.28).toFixed(1) : 'N/A')}ft
             </div>
             <div className="text-sm text-gray-500 mt-1">Wave Height</div>
             <div className="text-xs text-gray-400 mt-1">

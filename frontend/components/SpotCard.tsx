@@ -10,7 +10,7 @@ interface SpotCardProps {
 export default function SpotCard({ spot }: SpotCardProps) {
   return (
     <div className="bg-white rounded-xl overflow-hidden shadow-lg border border-gray-100 hover:shadow-xl transition-all duration-300 cursor-pointer group">
-      <div className="h-40 bg-gradient-to-br from-blue-400 to-teal-400 flex items-center justify-center group-hover:scale-105 transition-transform duration-300">
+      <div className="h-40 bg-gradient-to-br from-gray-800 to-gray-600 flex items-center justify-center group-hover:scale-105 transition-transform duration-300">
         <span className="text-6xl">{spot.image}</span>
       </div>
       <div className="p-5">

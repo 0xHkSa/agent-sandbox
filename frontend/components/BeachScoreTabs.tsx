@@ -107,7 +107,7 @@ export default function BeachScoreTabs() {
   return (
     <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
       {/* Header */}
-      <div className="bg-gradient-to-r from-blue-50 to-teal-50 px-6 py-4 border-b border-gray-200">
+      <div className="bg-gradient-to-r from-gray-100 to-gray-200 px-6 py-4 border-b border-gray-300">
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-xl font-bold text-gray-900">🏆 Smart Beach Scores</h3>
