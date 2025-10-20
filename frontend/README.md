@@ -1,4 +1,4 @@
-# 🌴 Hawaii Outdoor Hub - Frontend
+# 🌴 Go Hawaii - Frontend
 
 Modern, responsive web app for Hawaii outdoor activities, weather, and surf conditions.
 

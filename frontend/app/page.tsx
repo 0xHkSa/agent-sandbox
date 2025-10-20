@@ -4,6 +4,7 @@ import { useState } from 'react';
 import SpotCard from '@/components/SpotCard';
 import AIChat from '@/components/AIChat';
 import LiveConditions from '@/components/LiveConditions';
+import BeachScoreTabs from '@/components/BeachScoreTabs';
 
 const POPULAR_SPOTS = [
   { 
@@ -44,7 +45,7 @@ export default function Home() {
             <div className="flex items-center space-x-2">
               <span className="text-3xl">🌴</span>
               <h1 className="text-2xl sm:text-3xl font-bold bg-gradient-to-r from-blue-600 to-teal-600 bg-clip-text text-transparent">
-                Hawaii Outdoor Hub
+                 Go Hawaii
               </h1>
             </div>
             <button 
@@ -77,6 +78,11 @@ export default function Home() {
 
         {/* Live Conditions */}
         <LiveConditions />
+
+        {/* Beach Score Section */}
+        <div className="mt-12">
+          <BeachScoreTabs />
+        </div>
 
         {/* Popular Spots */}
         <div className="mt-12">
@@ -133,7 +139,7 @@ export default function Home() {
       {/* Footer */}
       <footer className="mt-20 bg-gray-900 text-gray-400 py-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-          <p>© 2025 Hawaii Outdoor Hub. Built with ❤️ in Hawaii.</p>
+           <p>© 2025 Go Hawaii. Built with ❤️ in Hawaii.</p>
           <p className="mt-2 text-sm">Real-time data from Open-Meteo & AI powered by Google Gemini</p>
         </div>
       </footer>

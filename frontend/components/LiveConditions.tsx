@@ -86,11 +86,11 @@ export default function LiveConditions() {
           <div className="text-center">
             <div className="text-4xl mb-2">🌡️</div>
             <div className="text-3xl font-bold text-gray-900">
-              {weather?.temperature_2m}°C
+              {weather?.current_converted?.temperature_fahrenheit || weather?.temperature_2m}°F
             </div>
             <div className="text-sm text-gray-500 mt-1">Temperature</div>
             <div className="text-xs text-gray-400 mt-1">
-              Feels like {weather?.apparent_temperature}°C
+              Feels like {weather?.current_converted?.apparent_temperature_fahrenheit || weather?.apparent_temperature}°F
             </div>
           </div>
 
@@ -98,7 +98,7 @@ export default function LiveConditions() {
           <div className="text-center">
             <div className="text-4xl mb-2">💨</div>
             <div className="text-3xl font-bold text-gray-900">
-              {weather?.wind_speed_10m} <span className="text-lg">km/h</span>
+              {weather?.current_converted?.wind_speed_mph || weather?.wind_speed_10m} <span className="text-lg">mph</span>
             </div>
             <div className="text-sm text-gray-500 mt-1">Wind Speed</div>
             <div className="text-xs text-gray-400 mt-1">
@@ -110,11 +110,11 @@ export default function LiveConditions() {
           <div className="text-center">
             <div className="text-4xl mb-2">🌊</div>
             <div className="text-3xl font-bold text-gray-900">
-              {waveHeight?.toFixed(1)}m
+              {surf?.hourly_converted?.wave_height_feet?.[0] || (waveHeight ? (waveHeight * 3.28).toFixed(1) : 'N/A')}ft
             </div>
             <div className="text-sm text-gray-500 mt-1">Wave Height</div>
             <div className="text-xs text-gray-400 mt-1">
-              {waveHeight ? `${(waveHeight * 3.28).toFixed(1)}ft` : 'N/A'}
+              {waveHeight ? `${waveHeight.toFixed(1)}m` : 'N/A'}
             </div>
           </div>
 

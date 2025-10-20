@@ -2,8 +2,8 @@ import express from "express";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { findSpot } from "../utils/spots.js";
-import { getWeather, getSurf, computeOutdoorIndex } from "./tools";
+import { findSpot, recommendBeaches } from "../utils/spots.js";
+import { getWeather, getSurf, computeOutdoorIndex, getTides, getUVIndex, calculateBeachScore } from "./tools";
 
 const app = express();
 app.use(express.json());
@@ -91,6 +91,113 @@ server.registerTool(
       content: [{ type: "text", text: JSON.stringify(output) }],
       structuredContent: output
     };
+  }
+);
+
+// tool: getTides
+server.registerTool(
+  "getTides",
+  {
+    title: "Get tide information",
+    description: "Get current tide level and next high/low tide times for Hawaii",
+    inputSchema: { lat: z.number(), lon: z.number() }
+  },
+  async ({ lat, lon }: { lat: number; lon: number }) => {
+    const data = await getTides(lat, lon);
+    return {
+      content: [{ type: "text", text: JSON.stringify(data) }],
+      structuredContent: data
+    };
+  }
+);
+
+// tool: getUVIndex
+server.registerTool(
+  "getUVIndex",
+  {
+    title: "Get UV index and sun protection advice",
+    description: "Get current UV index with risk level and protection recommendations",
+    inputSchema: { lat: z.number(), lon: z.number() }
+  },
+  async ({ lat, lon }: { lat: number; lon: number }) => {
+    const data = await getUVIndex(lat, lon);
+    return {
+      content: [{ type: "text", text: JSON.stringify(data) }],
+      structuredContent: data
+    };
+  }
+);
+
+// tool: recommendBeaches
+server.registerTool(
+  "recommendBeaches",
+  {
+    title: "Recommend beaches based on criteria",
+    description: "Get beach recommendations for families, surfers, snorkelers, etc.",
+    inputSchema: { 
+      family: z.boolean().optional(),
+      surf: z.boolean().optional(), 
+      snorkel: z.boolean().optional(),
+      scenic: z.boolean().optional(),
+      island: z.string().optional()
+    }
+  },
+  async ({ family, surf, snorkel, scenic, island }: { 
+    family?: boolean; 
+    surf?: boolean; 
+    snorkel?: boolean; 
+    scenic?: boolean; 
+    island?: string; 
+  }) => {
+    const beaches = recommendBeaches({ family, surf, snorkel, scenic, island });
+    return {
+      content: [{ type: "text", text: JSON.stringify(beaches) }],
+      structuredContent: beaches
+    };
+  }
+);
+
+// tool: getBeachScore
+server.registerTool(
+  "getBeachScore",
+  {
+    title: "Get comprehensive beach score",
+    description: "Get detailed scoring for a beach including weather, waves, UV, tides, and crowd levels (0-10 scale)",
+    inputSchema: { 
+      lat: z.number(), 
+      lon: z.number(),
+      beachType: z.enum(['family', 'surf', 'snorkel', 'scenic', 'mixed']).optional(),
+      crowdLevel: z.number().optional()
+    }
+  },
+  async ({ lat, lon, beachType = 'mixed', crowdLevel }: { 
+    lat: number; 
+    lon: number; 
+    beachType?: 'family' | 'surf' | 'snorkel' | 'scenic' | 'mixed';
+    crowdLevel?: number;
+  }) => {
+    try {
+      // Get all the data needed for scoring
+      const [weather, surf, uv, tides] = await Promise.all([
+        getWeather(lat, lon),
+        getSurf(lat, lon),
+        getUVIndex(lat, lon),
+        getTides(lat, lon)
+      ]);
+
+      // Calculate comprehensive beach score
+      const score = calculateBeachScore(weather, surf, uv, tides, beachType, crowdLevel);
+      
+      return {
+        content: [{ type: "text", text: JSON.stringify(score) }],
+        structuredContent: score
+      };
+    } catch (error: any) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ error: error.message }) }],
+        structuredContent: { error: error.message }
+      };
+    }
   }
 );
 

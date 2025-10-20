@@ -1,5 +1,6 @@
 import "dotenv/config";
-import { getWeather, getSurf, computeOutdoorIndex } from "./mcp/tools.js";
+import { getWeather, getSurf, computeOutdoorIndex, getTides, getUVIndex, calculateBeachScore } from "./mcp/tools.js";
+import { recommendBeaches } from "./utils/spots.js";
 import { askAgent } from "./agent/gemini-agent.js";
 import { logger } from "./utils/logger.js";
 import express from "express";
@@ -112,6 +113,61 @@ app.post("/tool/getOutdoorIndex", async (req, res) => {
     res.json({ ok:true, data: out });
   } catch (e) {
     res.status(502).json({ ok:false, error: (e&&e.message)||"outdoor index failed" });
+  }
+});
+
+app.post("/tool/getTides", async (req, res) => {
+  const lat = Number(req.body?.lat), lon = Number(req.body?.lon);
+  if (Number.isNaN(lat) || Number.isNaN(lon)) return res.status(400).json({ ok:false, error:"lat/lon required"});
+  try {
+    const data = await getTides(lat, lon);
+    res.json({ ok:true, data });
+  } catch (e) {
+    res.status(502).json({ ok:false, error: (e&&e.message)||"tide data failed" });
+  }
+});
+
+app.post("/tool/getUVIndex", async (req, res) => {
+  const lat = Number(req.body?.lat), lon = Number(req.body?.lon);
+  if (Number.isNaN(lat) || Number.isNaN(lon)) return res.status(400).json({ ok:false, error:"lat/lon required"});
+  try {
+    const data = await getUVIndex(lat, lon);
+    res.json({ ok:true, data });
+  } catch (e) {
+    res.status(502).json({ ok:false, error: (e&&e.message)||"UV data failed" });
+  }
+});
+
+app.post("/tool/recommendBeaches", async (req, res) => {
+  try {
+    const { family, surf, snorkel, scenic, island } = req.body;
+    const beaches = recommendBeaches({ family, surf, snorkel, scenic, island });
+    res.json({ ok:true, data: beaches });
+  } catch (e) {
+    res.status(502).json({ ok:false, error: (e&&e.message)||"beach recommendations failed" });
+  }
+});
+
+app.post("/tool/getBeachScore", async (req, res) => {
+  const lat = Number(req.body?.lat), lon = Number(req.body?.lon);
+  if (Number.isNaN(lat) || Number.isNaN(lon)) return res.status(400).json({ ok:false, error:"lat/lon required"});
+  try {
+    const { beachType = 'mixed', crowdLevel } = req.body;
+    
+    // Get all the data needed for scoring
+    const [weather, surf, uv, tides] = await Promise.all([
+      getWeather(lat, lon),
+      getSurf(lat, lon),
+      getUVIndex(lat, lon),
+      getTides(lat, lon)
+    ]);
+
+    // Calculate comprehensive beach score
+    const score = calculateBeachScore(weather, surf, uv, tides, beachType, crowdLevel);
+    
+    res.json({ ok:true, data: score });
+  } catch (e) {
+    res.status(502).json({ ok:false, error: (e&&e.message)||"beach scoring failed" });
   }
 });
 

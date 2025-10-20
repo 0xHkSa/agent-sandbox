@@ -25,6 +25,26 @@ const TOOLS = [
     name: "getOutdoorIndex",
     description: "Calculate a 0-10 outdoor comfort score based on current weather conditions.",
     parameters: { lat: "number", lon: "number" }
+  },
+  {
+    name: "getTides",
+    description: "Get tide information including current level and next high/low tide times for Hawaii locations.",
+    parameters: { lat: "number", lon: "number" }
+  },
+  {
+    name: "getUVIndex",
+    description: "Get UV index with sun protection recommendations and risk level.",
+    parameters: { lat: "number", lon: "number" }
+  },
+  {
+    name: "recommendBeaches",
+    description: "Get beach recommendations based on criteria like family-friendly, surf, snorkel, scenic, or specific island.",
+    parameters: { family: "boolean (optional)", surf: "boolean (optional)", snorkel: "boolean (optional)", scenic: "boolean (optional)", island: "string (optional)" }
+  },
+  {
+    name: "getBeachScore",
+    description: "Get comprehensive beach score (0-10 scale) including weather, waves, UV, tides, and crowd levels for any location.",
+    parameters: { lat: "number", lon: "number", beachType: "string (optional)", crowdLevel: "number (optional)" }
   }
 ];
 
@@ -107,19 +127,35 @@ export async function askAgent(question: string): Promise<string> {
 2. **getWeather** - Get temperature, wind, precipitation (for weather questions)
 3. **getSurf** - Get wave height, period, direction (for surf/wave questions)
 4. **getOutdoorIndex** - Get 0-10 outdoor comfort score (for "should I" or "conditions" questions)
+5. **getTides** - Get tide level and next high/low tide times (for surf timing questions)
+6. **getUVIndex** - Get UV index and sun protection advice (for safety questions)
+7. **recommendBeaches** - Get beach recommendations based on criteria (for "best beach" questions)
+8. **getBeachScore** - Get comprehensive 0-10 beach score with detailed breakdown (for scoring questions)
 
 **Decision guide:**
-- "What's the weather?" → resolveSpot + getWeather
-- "How are the waves?" → resolveSpot + getSurf
-- "Should I surf?" → resolveSpot + getWeather + getSurf + getOutdoorIndex (comprehensive)
-- "What's the temperature?" → resolveSpot + getWeather
-- "Overall conditions?" → resolveSpot + getWeather + getSurf + getOutdoorIndex
+- "What's the weather?" → resolveSpot + getWeather + getUVIndex
+- "How are the waves?" → resolveSpot + getSurf + getTides
+- "Should I surf?" → resolveSpot + getWeather + getSurf + getTides + getOutdoorIndex (comprehensive)
+- "What's the temperature?" → resolveSpot + getWeather + getUVIndex
+- "Overall conditions?" → resolveSpot + getWeather + getSurf + getTides + getUVIndex + getOutdoorIndex
+- "Best time to surf?" → resolveSpot + getSurf + getTides + getWeather
+- "Best beach for families?" → recommendBeaches(family: true) + getBeachScore for top recommendations
+- "Best beach to go to?" → recommendBeaches + getBeachScore for top spots
+- "Score this beach" → resolveSpot + getBeachScore
+- "How good is [beach] today?" → resolveSpot + getBeachScore
 
 **Known coordinates (use when mentioned):**
-- Waikiki: lat=21.281, lon=-157.8374
+- Waikiki: lat=21.2766, lon=-157.8269
 - North Shore: lat=21.6649, lon=-158.0532  
 - Honolulu: lat=21.3069, lon=-157.8583
-- Kailua: lat=21.4022, lon=-157.7394
+- Kailua: lat=21.4010, lon=-157.7394
+- Lanikai: lat=21.3927, lon=-157.7160
+- Hanauma Bay: lat=21.2706, lon=-157.6939
+- Ala Moana: lat=21.2906, lon=-157.8422
+
+**Access restrictions:**
+- Bellows Beach: Military-only access (requires military ID)
+- Hanauma Bay: Requires reservations and entrance fee
 
 **Output ONLY a JSON array of tool calls. Examples:**
 
@@ -254,15 +290,15 @@ ${toolResults.map(r => `${r.tool}: ${JSON.stringify(r.result || r.error, null, 2
 
 **FORMAT (FOLLOW EXACTLY):**
 Sentence 1: Yes/No + key recommendation
-Sentence 2: Weather/wave data (temp, wave height, wind, outdoor score)
-Sentence 3 (optional): One brief tip or caution
+Sentence 2: Weather/wave data (temp in °F, wave height in feet, wind in mph, outdoor score)
+Sentence 3 (optional): One brief tip, caution, or access restriction (e.g., "Bellows requires military ID", "Hanauma Bay needs reservations")
 
 **EXAMPLES YOU MUST COPY:**
-✅ "Yes, great surf today! Waikiki has 1m waves (3ft), 26°C, light 6km/h wind, outdoor score 10/10. Perfect for beginners."
+✅ "Yes, great surf today! Waikiki has 3ft waves, 79°F, light 4mph wind, outdoor score 10/10. Perfect for beginners."
 
-✅ "Not ideal. North Shore has rough 2m waves, 15km/h wind, score 6/10. Try Waikiki instead or wait for calmer conditions."
+✅ "Not ideal. North Shore has rough 6ft waves, 9mph wind, score 6/10. Try Waikiki instead or wait for calmer conditions."
 
-✅ "Decent conditions. 25°C, 0.8m waves, 8km/h wind, score 8/10."
+✅ "Decent conditions. 77°F, 2.6ft waves, 5mph wind, score 8/10."
 
 **FORBIDDEN (DO NOT USE):**
 ❌ "Aloha! I'd be happy to..."

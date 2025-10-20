@@ -1,4 +1,4 @@
-# Hawaii Outdoor Hub - Development Roadmap
+# Go Hawaii - Development Roadmap
 
 > **Current Status**: MVP working with real-time weather/surf data and AI-powered recommendations  
 > **Goal**: Transform from basic AI tool to "pro surfer's secret weapon" - a local expert in your pocket
@@ -128,7 +128,7 @@
 
 - **User engagement**: Time spent on app, return visits
 - **Recommendation accuracy**: User satisfaction with suggestions
-- **Local adoption**: Hawaii residents using the app
+- **Local adoption**: Hawaii residents using Go Hawaii
 - **Data freshness**: Real-time accuracy of conditions
 - **Mobile usage**: Beach-ready performance
 
