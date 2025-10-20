@@ -5,6 +5,7 @@ import SpotCard from '@/components/SpotCard';
 import AIChat from '@/components/AIChat';
 import LiveConditions from '@/components/LiveConditions';
 import BeachScoreTabs from '@/components/BeachScoreTabs';
+import InteractiveMap from '@/components/InteractiveMap';
 
 const POPULAR_SPOTS = [
   { 
@@ -39,18 +40,18 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-cyan-50 to-teal-50">
       {/* Header */}
-      <header className="bg-white/80 backdrop-blur-sm border-b border-gray-200 sticky top-0 z-50">
+      <header className="bg-gradient-to-r from-gray-900 to-gray-700 border-b border-gray-600 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-2">
               <span className="text-3xl">🌴</span>
-              <h1 className="text-2xl sm:text-3xl font-bold bg-gradient-to-r from-blue-600 to-teal-600 bg-clip-text text-transparent">
+              <h1 className="text-2xl sm:text-3xl font-bold text-white">
                  Go Hawaii
               </h1>
             </div>
             <button 
               onClick={() => setShowAI(!showAI)}
-              className="px-4 py-2 bg-gradient-to-r from-blue-500 to-teal-500 text-white rounded-lg hover:from-blue-600 hover:to-teal-600 transition-all duration-200 font-medium"
+              className="px-4 py-2 bg-gradient-to-r from-gray-600 to-gray-500 text-white rounded-lg hover:from-gray-700 hover:to-gray-600 transition-all duration-200 font-medium"
             >
               🤖 AI Assistant {showAI ? '✕' : ''}
             </button>
@@ -124,15 +125,20 @@ export default function Home() {
         </div>
 
         {/* Footer CTA */}
-        <div className="mt-16 bg-gradient-to-r from-blue-600 to-teal-600 rounded-2xl p-8 sm:p-12 text-center text-white">
+        <div className="mt-16 bg-gradient-to-r from-gray-900 to-gray-700 rounded-2xl p-8 sm:p-12 text-center text-white">
           <h3 className="text-3xl font-bold mb-4">Ready to explore Hawaii?</h3>
-          <p className="text-xl mb-6 text-blue-100">Get real-time conditions and expert AI guidance</p>
+          <p className="text-xl mb-6 text-gray-300">Get real-time conditions and expert AI guidance</p>
           <button 
             onClick={() => setShowAI(true)}
-            className="px-8 py-3 bg-white text-blue-600 rounded-lg font-bold hover:bg-blue-50 transition-colors duration-200"
+            className="px-8 py-3 bg-white text-gray-900 rounded-lg font-bold hover:bg-gray-100 transition-colors duration-200"
           >
             Start Planning Your Adventure
           </button>
+        </div>
+
+        {/* Interactive Map */}
+        <div className="mt-12">
+          <InteractiveMap />
         </div>
       </main>
 

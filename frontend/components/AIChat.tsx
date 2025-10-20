@@ -53,9 +53,9 @@ export default function AIChat() {
 
   return (
     <div className="bg-white rounded-2xl shadow-2xl border border-gray-200 overflow-hidden">
-      <div className="bg-gradient-to-r from-blue-600 to-teal-600 p-6 text-white">
+      <div className="bg-gradient-to-r from-gray-900 to-gray-700 p-6 text-white">
         <h3 className="text-2xl font-bold mb-2">🤖 AI Assistant (Beta)</h3>
-        <p className="text-blue-100">Ask me anything about Hawaii outdoor conditions!</p>
+        <p className="text-gray-300">Ask me anything about Hawaii outdoor conditions!</p>
       </div>
 
       <div className="p-6">
@@ -109,7 +109,7 @@ export default function AIChat() {
         )}
 
         {answer && !loading && (
-          <div className="bg-gradient-to-br from-blue-50 to-teal-50 border border-blue-200 rounded-lg p-5">
+          <div className="bg-gradient-to-br from-gray-100 to-gray-200 border border-gray-300 rounded-lg p-5">
             <div className="flex items-start space-x-3">
               <span className="text-2xl">💬</span>
               <div className="flex-1">
