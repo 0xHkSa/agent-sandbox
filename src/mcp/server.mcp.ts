@@ -3,7 +3,7 @@ import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { findSpot, recommendBeaches } from "../utils/spots.js";
-import { getWeather, getSurf, computeOutdoorIndex, getTides, getUVIndex, calculateBeachScore } from "./tools";
+import { getWeather, getSurf, computeOutdoorIndex, getTides, getUVIndex, calculateBeachScore, analyzeMultipleSpots } from "./tools";
 
 const app = express();
 app.use(express.json());
@@ -191,6 +191,37 @@ server.registerTool(
       return {
         content: [{ type: "text", text: JSON.stringify(score) }],
         structuredContent: score
+      };
+    } catch (error: any) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ error: error.message }) }],
+        structuredContent: { error: error.message }
+      };
+    }
+  }
+);
+
+// tool: analyzeMultipleSpots
+server.registerTool(
+  "analyzeMultipleSpots",
+  {
+    title: "Analyze multiple beach spots simultaneously",
+    description: "Compare multiple Hawaii beach spots with comprehensive analysis including rankings, insights, and recommendations",
+    inputSchema: { 
+      spotNames: z.array(z.string()).min(1).max(10),
+      beachTypes: z.array(z.enum(['surf', 'family', 'snorkel', 'scenic', 'mixed'])).optional()
+    }
+  },
+  async ({ spotNames, beachTypes }: { 
+    spotNames: string[];
+    beachTypes?: Array<'surf' | 'family' | 'snorkel' | 'scenic' | 'mixed'>;
+  }) => {
+    try {
+      const analysis = await analyzeMultipleSpots(spotNames, beachTypes);
+      
+      return {
+        content: [{ type: "text", text: JSON.stringify(analysis) }],
+        structuredContent: analysis
       };
     } catch (error: any) {
       return {

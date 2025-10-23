@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { getWeather, getSurf, computeOutdoorIndex, getTides, getUVIndex, calculateBeachScore } from "./mcp/tools.js";
+import { getWeather, getSurf, computeOutdoorIndex, getTides, getUVIndex, calculateBeachScore, analyzeMultipleSpots } from "./mcp/tools.js";
 import { recommendBeaches } from "./utils/spots.js";
 import { askAgent } from "./agent/gemini-agent.js";
 import { logger } from "./utils/logger.js";
@@ -145,6 +145,23 @@ app.post("/tool/recommendBeaches", async (req, res) => {
     res.json({ ok:true, data: beaches });
   } catch (e) {
     res.status(502).json({ ok:false, error: (e&&e.message)||"beach recommendations failed" });
+  }
+});
+
+app.post("/tool/analyzeMultipleSpots", async (req, res) => {
+  try {
+    const { spotNames, beachTypes } = req.body;
+    if (!spotNames || !Array.isArray(spotNames) || spotNames.length === 0) {
+      return res.status(400).json({ ok:false, error: "spotNames array required" });
+    }
+    if (spotNames.length > 10) {
+      return res.status(400).json({ ok:false, error: "Maximum 10 spots allowed" });
+    }
+    
+    const analysis = await analyzeMultipleSpots(spotNames, beachTypes);
+    res.json({ ok:true, data: analysis });
+  } catch (e) {
+    res.status(502).json({ ok:false, error: (e&&e.message)||"multi-spot analysis failed" });
   }
 });
 
