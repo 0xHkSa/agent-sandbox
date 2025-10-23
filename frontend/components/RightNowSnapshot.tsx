@@ -21,20 +21,38 @@ export default function RightNowSnapshot() {
     // Fetch real-time recommendations from API
     const fetchRecommendations = async () => {
       try {
-        // Get beach scores for all spots
-        const beachNames = ['Waikiki Beach', 'North Shore', 'Sunset Beach', 'Lanikai Beach'];
+        // Get beach scores for all 13 Oahu beaches with coordinates
+        const beaches = [
+          { name: 'Waikiki Beach', lat: 21.2766, lon: -157.8269 },
+          { name: 'Kailua Beach', lat: 21.4010, lon: -157.7394 },
+          { name: 'Lanikai Beach', lat: 21.3927, lon: -157.7160 },
+          { name: 'North Shore', lat: 21.6649, lon: -158.0532 },
+          { name: 'Sandy Beach', lat: 21.2847, lon: -157.6722 },
+          { name: 'Makapu\'u Beach', lat: 21.3106, lon: -157.6589 },
+          { name: 'Hanauma Bay', lat: 21.2706, lon: -157.6939 },
+          { name: 'Sunset Beach', lat: 21.6589, lon: -158.0539 },
+          { name: 'Pipeline', lat: 21.6649, lon: -158.0532 },
+          { name: 'Ala Moana Beach', lat: 21.2906, lon: -157.8422 },
+          { name: 'Waimanalo Beach', lat: 21.3347, lon: -157.7000 },
+          { name: 'Honolulu', lat: 21.3069, lon: -157.8583 }
+        ];
         
-        const scorePromises = beachNames.map(async (beach) => {
+        const scorePromises = beaches.map(async (beach) => {
           try {
             const res = await fetch('http://localhost:4000/tool/getBeachScore', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ beach, activity: 'surfing' })
+              body: JSON.stringify({ 
+                beach: beach.name, 
+                lat: beach.lat, 
+                lon: beach.lon, 
+                activity: 'surfing' 
+              })
             });
             const data = await res.json();
-            return { beach, data: data.result };
+            return { beach: beach.name, data: data.data };
           } catch {
-            return { beach, data: null };
+            return { beach: beach.name, data: null };
           }
         });
 
@@ -42,25 +60,25 @@ export default function RightNowSnapshot() {
         const validScores = scores.filter(s => s.data);
 
         if (validScores.length > 0) {
-          // Find best surfing spot (highest wave height from score data)
+          // Find best surfing spot (highest wave score)
           const bestSurf = validScores.reduce((prev, current) => {
-            const prevWave = prev.data?.components?.wave || 0;
-            const currWave = current.data?.components?.wave || 0;
+            const prevWave = prev.data?.waves || 0;
+            const currWave = current.data?.waves || 0;
             return currWave > prevWave ? current : prev;
           });
 
-          // Find best beginner spot (Waikiki or best overall score for beginners)
+          // Find best beginner spot (Waikiki or best overall score)
           const waikiki = validScores.find(s => s.beach.includes('Waikiki'));
           const bestBeginner = waikiki || validScores.reduce((prev, current) => {
-            const prevScore = prev.data?.compositeScore || 0;
-            const currScore = current.data?.compositeScore || 0;
+            const prevScore = prev.data?.overall || 0;
+            const currScore = current.data?.overall || 0;
             return currScore > prevScore ? current : prev;
           });
 
-          // Find least crowded (lowest crowd score)
+          // Find least crowded (lowest crowd level)
           const leastCrowded = validScores.reduce((prev, current) => {
-            const prevCrowd = prev.data?.components?.crowd || 10;
-            const currCrowd = current.data?.components?.crowd || 10;
+            const prevCrowd = prev.data?.crowd_level || 10;
+            const currCrowd = current.data?.crowd_level || 10;
             return currCrowd < prevCrowd ? current : prev;
           });
 
@@ -69,19 +87,19 @@ export default function RightNowSnapshot() {
               activity: 'Best for Surfing', 
               beach: bestSurf.beach, 
               emoji: '🏄',
-              score: Math.round((bestSurf.data?.components?.wave || 0))
+              score: Math.round((bestSurf.data?.waves || 0))
             },
             { 
               activity: 'Best for Beginners', 
               beach: bestBeginner.beach, 
               emoji: '🌊',
-              score: Math.round((bestBeginner.data?.compositeScore || 0))
+              score: Math.round((bestBeginner.data?.overall || 0))
             },
             { 
               activity: 'Least Crowded', 
               beach: leastCrowded.beach, 
               emoji: '🏖️',
-              score: Math.round((leastCrowded.data?.components?.crowd || 0))
+              score: Math.round((leastCrowded.data?.crowd_level || 0))
             },
           ]);
 
@@ -121,7 +139,7 @@ export default function RightNowSnapshot() {
   }, []);
 
   return (
-    <div className="bg-black/40 backdrop-blur-md rounded-lg p-8">
+    <div className="p-8">
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <h3 className="text-white text-2xl font-bold uppercase tracking-wide">

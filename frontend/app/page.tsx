@@ -1,10 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import AIChat from '@/components/AIChat';
 import LiveConditions from '@/components/LiveConditions';
 import RightNowSnapshot from '@/components/RightNowSnapshot';
 import HeaderWeather from '@/components/HeaderWeather';
+import LandingAnimation from '@/components/LandingAnimation';
 
 const BEACH_ACTIVITIES = [
   {
@@ -26,9 +27,16 @@ const BEACH_ACTIVITIES = [
 
 export default function Home() {
   const [showAI, setShowAI] = useState(false);
+  const [showLanding, setShowLanding] = useState(true);
+
+  const handleLandingComplete = () => {
+    setShowLanding(false);
+  };
 
   return (
     <div className="relative min-h-screen">
+      {/* Landing Animation - Only shows on first visit */}
+      {showLanding && <LandingAnimation onComplete={handleLandingComplete} />}
       {/* Background Image - Fixed for entire page */}
       <div 
         className="fixed inset-0 bg-cover bg-center bg-no-repeat -z-10"
