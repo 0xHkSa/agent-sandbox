@@ -526,3 +526,336 @@ export function computeOutdoorIndex(weather: any): { index: number; note: string
     return { index: 0, note: "Insufficient data" };
   }
 }
+
+// Multi-Spot Analysis Tool
+export interface SpotAnalysis {
+  name: string;
+  lat: number;
+  lon: number;
+  type: 'surf' | 'family' | 'snorkel' | 'scenic' | 'mixed';
+  island: string;
+  weather: any;
+  weather_converted: any;
+  surf: any;
+  surf_converted: any;
+  uv: any;
+  tides: any;
+  outdoorIndex: any;
+  beachScore: BeachScore;
+  summary: string;
+}
+
+export interface MultiSpotAnalysis {
+  spots: SpotAnalysis[];
+  comparison: {
+    best_overall: string;
+    best_weather: string;
+    best_surf: string;
+    best_family: string;
+    best_snorkel: string;
+    rankings: Array<{
+      spot: string;
+      overall_score: number;
+      weather_score: number;
+      surf_score: number;
+      uv_safety_score: number;
+    }>;
+  };
+  insights: string[];
+  recommendations: string[];
+  analysis_time: string;
+}
+
+export async function analyzeMultipleSpots(
+  spotNames: string[],
+  beachTypes?: Array<'surf' | 'family' | 'snorkel' | 'scenic' | 'mixed'>
+): Promise<MultiSpotAnalysis> {
+  try {
+    // Import findSpot function
+    const { findSpot } = await import("../utils/spots.js");
+    
+    // Resolve spot names to coordinates
+    const spots = spotNames.map(name => {
+      const spot = findSpot(name);
+      if (!spot) throw new Error(`Spot "${name}" not found`);
+      return spot;
+    });
+
+    // Analyze each spot
+    const spotAnalyses: SpotAnalysis[] = [];
+    
+    for (let i = 0; i < spots.length; i++) {
+      const spot = spots[i];
+      const beachType = beachTypes?.[i] || 'mixed';
+      
+      try {
+        // Get all data for this spot
+        const [weather, surf, uv, tides] = await Promise.all([
+          getWeather(spot.lat, spot.lon),
+          getSurf(spot.lat, spot.lon),
+          getUVIndex(spot.lat, spot.lon),
+          getTides(spot.lat, spot.lon)
+        ]);
+
+        // Calculate outdoor index
+        const outdoorIndex = computeOutdoorIndex(weather);
+        
+        // Calculate comprehensive beach score
+        const beachScore = calculateBeachScore(weather, surf, uv, tides, beachType);
+        
+        // Generate summary
+        const summary = generateSpotSummary(spot, weather, surf, uv, beachScore);
+        
+        spotAnalyses.push({
+          name: spot.name,
+          lat: spot.lat,
+          lon: spot.lon,
+          type: beachType,
+          island: spot.island || 'Unknown',
+          weather,
+          weather_converted: weather.current_converted,
+          surf,
+          surf_converted: surf.hourly_converted,
+          uv,
+          tides,
+          outdoorIndex,
+          beachScore,
+          summary
+        });
+      } catch (error) {
+        console.error(`Failed to analyze spot ${spot.name}:`, error);
+        // Add error entry
+        spotAnalyses.push({
+          name: spot.name,
+          lat: spot.lat,
+          lon: spot.lon,
+          type: beachType,
+          island: spot.island || 'Unknown',
+          weather: null,
+          weather_converted: null,
+          surf: null,
+          surf_converted: null,
+          uv: null,
+          tides: null,
+          outdoorIndex: { index: 0, note: "Analysis failed" },
+          beachScore: {
+            overall: 0,
+            weather: 0,
+            waves: 0,
+            uv_safety: 0,
+            tides: 0,
+            crowd_level: 0,
+            breakdown: {
+              temperature_score: 0,
+              wind_score: 0,
+              precipitation_score: 0,
+              wave_height_score: 0,
+              wave_period_score: 0,
+              uv_index_score: 0,
+              tide_level_score: 0,
+            },
+            recommendations: ["Unable to analyze this spot"],
+            best_time_today: "Unknown"
+          },
+          summary: `Analysis failed for ${spot.name}`
+        });
+      }
+    }
+
+    // Generate comparison analysis
+    const comparison = generateComparison(spotAnalyses);
+    
+    // Generate insights
+    const insights = generateInsights(spotAnalyses);
+    
+    // Generate recommendations
+    const recommendations = generateMultiSpotRecommendations(spotAnalyses);
+
+    return {
+      spots: spotAnalyses,
+      comparison,
+      insights,
+      recommendations,
+      analysis_time: new Date().toISOString()
+    };
+  } catch (error: any) {
+    throw new Error(`Multi-spot analysis failed: ${error.message}`);
+  }
+}
+
+function generateSpotSummary(
+  spot: any, 
+  weather: any, 
+  surf: any, 
+  uv: any, 
+  beachScore: BeachScore
+): string {
+  const temp = weather?.current_converted?.temperature_fahrenheit || 'N/A';
+  const wind = weather?.current_converted?.wind_speed_mph || 'N/A';
+  const waves = surf?.hourly_converted?.wave_height_feet?.[0] || 'N/A';
+  const uvIndex = uv?.uv_index || 'N/A';
+  const overallScore = beachScore.overall;
+  
+  return `${spot.name}: ${overallScore}/10 overall score. Temp: ${temp}°F, Wind: ${wind} mph, Waves: ${waves} ft, UV: ${uvIndex}`;
+}
+
+function generateComparison(spots: SpotAnalysis[]): MultiSpotAnalysis['comparison'] {
+  const validSpots = spots.filter(s => s.beachScore.overall > 0);
+  
+  if (validSpots.length === 0) {
+    return {
+      best_overall: "No valid data",
+      best_weather: "No valid data",
+      best_surf: "No valid data",
+      best_family: "No valid data",
+      best_snorkel: "No valid data",
+      rankings: []
+    };
+  }
+
+  // Find best spots by category
+  const bestOverall = validSpots.reduce((best, current) => 
+    current.beachScore.overall > best.beachScore.overall ? current : best
+  );
+  
+  const bestWeather = validSpots.reduce((best, current) => 
+    current.beachScore.weather > best.beachScore.weather ? current : best
+  );
+  
+  const bestSurf = validSpots.reduce((best, current) => 
+    current.beachScore.waves > best.beachScore.waves ? current : best
+  );
+  
+  const bestFamily = validSpots
+    .filter(s => s.type === 'family')
+    .reduce((best, current) => 
+      current.beachScore.overall > best.beachScore.overall ? current : best,
+      validSpots[0] // fallback
+    );
+  
+  const bestSnorkel = validSpots
+    .filter(s => s.type === 'snorkel')
+    .reduce((best, current) => 
+      current.beachScore.overall > best.beachScore.overall ? current : best,
+      validSpots[0] // fallback
+    );
+
+  // Generate rankings
+  const rankings = validSpots
+    .map(spot => ({
+      spot: spot.name,
+      overall_score: spot.beachScore.overall,
+      weather_score: spot.beachScore.weather,
+      surf_score: spot.beachScore.waves,
+      uv_safety_score: spot.beachScore.uv_safety
+    }))
+    .sort((a, b) => b.overall_score - a.overall_score);
+
+  return {
+    best_overall: bestOverall.name,
+    best_weather: bestWeather.name,
+    best_surf: bestSurf.name,
+    best_family: bestFamily.name,
+    best_snorkel: bestSnorkel.name,
+    rankings
+  };
+}
+
+function generateInsights(spots: SpotAnalysis[]): string[] {
+  const insights: string[] = [];
+  const validSpots = spots.filter(s => s.beachScore.overall > 0);
+  
+  if (validSpots.length === 0) {
+    return ["No valid data available for analysis"];
+  }
+
+  // Temperature insights
+  const temps = validSpots.map(s => s.weather_converted?.temperature_fahrenheit).filter(t => t);
+  if (temps.length > 0) {
+    const avgTemp = temps.reduce((a, b) => a + b, 0) / temps.length;
+    const tempRange = Math.max(...temps) - Math.min(...temps);
+    insights.push(`Average temperature across spots: ${avgTemp.toFixed(1)}°F (range: ${tempRange.toFixed(1)}°F)`);
+  }
+
+  // Wave insights
+  const waves = validSpots.map(s => s.surf_converted?.wave_height_feet?.[0]).filter(w => w);
+  if (waves.length > 0) {
+    const avgWaves = waves.reduce((a, b) => a + b, 0) / waves.length;
+    const maxWaves = Math.max(...waves);
+    const minWaves = Math.min(...waves);
+    insights.push(`Wave conditions vary from ${minWaves.toFixed(1)}ft to ${maxWaves.toFixed(1)}ft (avg: ${avgWaves.toFixed(1)}ft)`);
+  }
+
+  // Score distribution
+  const scores = validSpots.map(s => s.beachScore.overall);
+  const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+  const highScoreSpots = validSpots.filter(s => s.beachScore.overall >= 8).length;
+  insights.push(`Average beach score: ${avgScore.toFixed(1)}/10. ${highScoreSpots} spots rated 8+ (excellent)`);
+
+  // UV insights
+  const uvLevels = validSpots.map(s => s.uv?.uv_index).filter(u => u);
+  if (uvLevels.length > 0) {
+    const avgUV = uvLevels.reduce((a, b) => a + b, 0) / uvLevels.length;
+    const highUVSpots = validSpots.filter(s => (s.uv?.uv_index || 0) >= 7).length;
+    insights.push(`Average UV index: ${avgUV.toFixed(1)}. ${highUVSpots} spots have high UV (7+) - sunscreen essential`);
+  }
+
+  return insights;
+}
+
+function generateMultiSpotRecommendations(spots: SpotAnalysis[]): string[] {
+  const recommendations: string[] = [];
+  const validSpots = spots.filter(s => s.beachScore.overall > 0);
+  
+  if (validSpots.length === 0) {
+    return ["Unable to provide recommendations - no valid data"];
+  }
+
+  // Find the best overall spot
+  const bestSpot = validSpots.reduce((best, current) => 
+    current.beachScore.overall > best.beachScore.overall ? current : best
+  );
+  
+  recommendations.push(`🏆 Best overall choice: ${bestSpot.name} (${bestSpot.beachScore.overall}/10)`);
+
+  // Family-friendly recommendations
+  const familySpots = validSpots.filter(s => s.type === 'family' && s.beachScore.overall >= 7);
+  if (familySpots.length > 0) {
+    const bestFamily = familySpots.reduce((best, current) => 
+      current.beachScore.overall > best.beachScore.overall ? current : best
+    );
+    recommendations.push(`👨‍👩‍👧‍👦 Best for families: ${bestFamily.name} (${bestFamily.beachScore.overall}/10)`);
+  }
+
+  // Surf recommendations
+  const surfSpots = validSpots.filter(s => s.type === 'surf' && s.beachScore.waves >= 7);
+  if (surfSpots.length > 0) {
+    const bestSurf = surfSpots.reduce((best, current) => 
+      current.beachScore.waves > best.beachScore.waves ? current : best
+    );
+    recommendations.push(`🏄‍♂️ Best for surfing: ${bestSurf.name} (waves: ${bestSurf.beachScore.waves}/10)`);
+  }
+
+  // Snorkel recommendations
+  const snorkelSpots = validSpots.filter(s => s.type === 'snorkel' && s.beachScore.overall >= 7);
+  if (snorkelSpots.length > 0) {
+    const bestSnorkel = snorkelSpots.reduce((best, current) => 
+      current.beachScore.overall > best.beachScore.overall ? current : best
+    );
+    recommendations.push(`🤿 Best for snorkeling: ${bestSnorkel.name} (${bestSnorkel.beachScore.overall}/10)`);
+  }
+
+  // Weather-based recommendations
+  const rainySpots = validSpots.filter(s => (s.weather?.current?.precipitation || 0) > 0.5);
+  if (rainySpots.length > 0) {
+    recommendations.push(`⚠️ ${rainySpots.length} spots have rain - consider indoor alternatives`);
+  }
+
+  // UV warnings
+  const highUVSpots = validSpots.filter(s => (s.uv?.uv_index || 0) >= 7);
+  if (highUVSpots.length > 0) {
+    recommendations.push(`☀️ ${highUVSpots.length} spots have high UV - sunscreen and shade essential`);
+  }
+
+  return recommendations;
+}
