@@ -325,7 +325,7 @@ export async function getTides(lat: number, lon: number) {
     ];
     
     // Find closest station
-    let closestStation = hawaiiStations[0];
+    let closestStation = hawaiiStations[0]!;
     let minDistance = Math.sqrt(Math.pow(lat - closestStation.lat, 2) + Math.pow(lon - closestStation.lon, 2));
     
     for (const station of hawaiiStations) {
@@ -459,11 +459,13 @@ export async function getWeather(lat: number, lon: number) {
     latitude: lat,
     longitude: lon,
     current: ["temperature_2m","apparent_temperature","precipitation","wind_speed_10m"].join(","),
-    timezone: "Pacific/Honolulu"
+    hourly: ["temperature_2m","apparent_temperature","precipitation","wind_speed_10m","weather_code"].join(","),
+    timezone: "Pacific/Honolulu",
+    forecast_days: 1 // Only get today's data
   };
   const { data } = await axios.get(url, { params, timeout: 8000 });
   
-  // Add converted units to the response
+  // Add converted units to current data
   if (data.current) {
     const current = data.current;
     data.current_converted = {
@@ -474,7 +476,75 @@ export async function getWeather(lat: number, lon: number) {
     };
   }
   
-  return data; // Enhanced payload with conversions
+  // Process hourly data - get current hour + next 8 hours
+  if (data.hourly && data.hourly.time) {
+    const now = new Date();
+    const currentHourIndex = data.hourly.time.findIndex((t: string) => {
+      const hourTime = new Date(t);
+      return hourTime >= now;
+    });
+    
+    if (currentHourIndex >= 0) {
+      const hoursToShow = 9; // Current hour + 8 future hours
+      const endIndex = Math.min(currentHourIndex + hoursToShow, data.hourly.time.length);
+      
+      // Extract the relevant hours
+      const hourlySlice = {
+        time: data.hourly.time.slice(currentHourIndex, endIndex),
+        temperature_2m: data.hourly.temperature_2m.slice(currentHourIndex, endIndex),
+        apparent_temperature: data.hourly.apparent_temperature.slice(currentHourIndex, endIndex),
+        precipitation: data.hourly.precipitation.slice(currentHourIndex, endIndex),
+        wind_speed_10m: data.hourly.wind_speed_10m.slice(currentHourIndex, endIndex),
+        weather_code: data.hourly.weather_code.slice(currentHourIndex, endIndex)
+      };
+      
+      // Build formatted hourly forecast
+      data.hourly_forecast = hourlySlice.time.map((time: string, i: number) => {
+        const hour = new Date(time);
+        const weatherDescription = getWeatherDescription(hourlySlice.weather_code[i]);
+        
+        return {
+          time: hour.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'Pacific/Honolulu' }),
+          hour_24: hour.getHours(),
+          temperature_f: celsiusToFahrenheit(hourlySlice.temperature_2m[i]),
+          feels_like_f: celsiusToFahrenheit(hourlySlice.apparent_temperature[i]),
+          wind_mph: kmhToMph(hourlySlice.wind_speed_10m[i]),
+          precipitation_mm: hourlySlice.precipitation[i],
+          conditions: weatherDescription,
+          is_good_weather: hourlySlice.precipitation[i] < 0.5 && hourlySlice.temperature_2m[i] >= 20 && hourlySlice.temperature_2m[i] <= 32
+        };
+      });
+      
+      // Calculate summary stats
+      const temps = hourlySlice.temperature_2m;
+      data.forecast_summary = {
+        period: `Next ${hoursToShow} hours`,
+        high_f: celsiusToFahrenheit(Math.max(...temps)),
+        low_f: celsiusToFahrenheit(Math.min(...temps)),
+        avg_wind_mph: kmhToMph(hourlySlice.wind_speed_10m.reduce((a: number, b: number) => a + b, 0) / hourlySlice.wind_speed_10m.length),
+        rain_expected: hourlySlice.precipitation.some((p: number) => p > 0.5),
+        best_hours: hourlySlice.time
+          .map((t: string, i: number) => ({ time: t, index: i }))
+          .filter((h: any) => hourlySlice.precipitation[h.index] < 0.5 && hourlySlice.temperature_2m[h.index] >= 23 && hourlySlice.temperature_2m[h.index] <= 29)
+          .slice(0, 3)
+          .map((h: any) => new Date(h.time).toLocaleTimeString('en-US', { hour: 'numeric', timeZone: 'Pacific/Honolulu' }))
+      };
+    }
+  }
+  
+  return data; // Enhanced payload with conversions and hourly forecast
+}
+
+// Helper function to convert weather codes to descriptions
+function getWeatherDescription(code: number): string {
+  if (code === 0) return "Clear sky";
+  if (code <= 3) return "Partly cloudy";
+  if (code <= 48) return "Foggy";
+  if (code <= 67) return "Rainy";
+  if (code <= 77) return "Snowy";
+  if (code <= 82) return "Rain showers";
+  if (code <= 86) return "Snow showers";
+  return "Thunderstorm";
 }
 
 export async function getSurf(lat: number, lon: number) {
@@ -483,11 +553,12 @@ export async function getSurf(lat: number, lon: number) {
     latitude: lat,
     longitude: lon,
     hourly: ["wave_height","wave_direction","wave_period","wind_wave_height"].join(","),
-    timezone: "Pacific/Honolulu"
+    timezone: "Pacific/Honolulu",
+    forecast_days: 1 // Only get today's data
   };
   const { data } = await (await import("axios")).default.get(url, { params, timeout: 8000 });
   
-  // Add converted units to the response
+  // Add converted units to the response (keep for backward compatibility)
   if (data.hourly) {
     const hourly = data.hourly;
     data.hourly_converted = {
@@ -498,7 +569,129 @@ export async function getSurf(lat: number, lon: number) {
     };
   }
   
-  return data; // Enhanced payload with conversions
+  // Process hourly data - get current hour + next 8 hours
+  if (data.hourly && data.hourly.time) {
+    const now = new Date();
+    const currentHourIndex = data.hourly.time.findIndex((t: string) => {
+      const hourTime = new Date(t);
+      return hourTime >= now;
+    });
+    
+    if (currentHourIndex >= 0) {
+      const hoursToShow = 9; // Current hour + 8 future hours
+      const endIndex = Math.min(currentHourIndex + hoursToShow, data.hourly.time.length);
+      
+      // Extract the relevant hours
+      const hourlySlice = {
+        time: data.hourly.time.slice(currentHourIndex, endIndex),
+        wave_height: data.hourly.wave_height.slice(currentHourIndex, endIndex),
+        wave_direction: data.hourly.wave_direction.slice(currentHourIndex, endIndex),
+        wave_period: data.hourly.wave_period.slice(currentHourIndex, endIndex),
+        wind_wave_height: data.hourly.wind_wave_height?.slice(currentHourIndex, endIndex) || []
+      };
+      
+      // Build formatted hourly forecast
+      data.hourly_forecast = hourlySlice.time.map((time: string, i: number) => {
+        const hour = new Date(time);
+        const waveHeightFt = metersToFeet(hourlySlice.wave_height[i]);
+        const wavePeriod = hourlySlice.wave_period[i];
+        const waveQuality = assessWaveQuality(waveHeightFt, wavePeriod);
+        const waveDir = getWaveDirectionName(hourlySlice.wave_direction[i]);
+        
+        return {
+          time: hour.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'Pacific/Honolulu' }),
+          hour_24: hour.getHours(),
+          wave_height_ft: waveHeightFt,
+          wave_height_m: hourlySlice.wave_height[i],
+          wave_period_s: wavePeriod,
+          wave_direction: waveDir,
+          wave_direction_degrees: hourlySlice.wave_direction[i],
+          quality: waveQuality.rating,
+          quality_description: waveQuality.description,
+          good_for_surfing: waveQuality.rating >= 3 // 3+ out of 5 is good
+        };
+      });
+      
+      // Calculate summary stats
+      const waveHeights = hourlySlice.wave_height;
+      const wavePeriods = hourlySlice.wave_period;
+      data.surf_summary = {
+        period: `Next ${hoursToShow} hours`,
+        max_wave_height_ft: metersToFeet(Math.max(...waveHeights)),
+        min_wave_height_ft: metersToFeet(Math.min(...waveHeights)),
+        avg_wave_height_ft: metersToFeet(waveHeights.reduce((a: number, b: number) => a + b, 0) / waveHeights.length),
+        avg_wave_period_s: wavePeriods.reduce((a: number, b: number) => a + b, 0) / wavePeriods.length,
+        dominant_direction: getWaveDirectionName(hourlySlice.wave_direction[0]),
+        trend: waveHeights[waveHeights.length - 1] > waveHeights[0] ? "building" : "dropping",
+        best_hours: hourlySlice.time
+          .map((t: string, i: number) => ({ time: t, index: i, score: assessWaveQuality(metersToFeet(hourlySlice.wave_height[i]), hourlySlice.wave_period[i]).rating }))
+          .filter((h: any) => h.score >= 3)
+          .sort((a: any, b: any) => b.score - a.score)
+          .slice(0, 3)
+          .map((h: any) => new Date(h.time).toLocaleTimeString('en-US', { hour: 'numeric', timeZone: 'Pacific/Honolulu' }))
+      };
+    }
+  }
+  
+  return data; // Enhanced payload with conversions and hourly forecast
+}
+
+// Helper function to assess wave quality for surfing
+function assessWaveQuality(waveHeightFt: number, periodS: number): { rating: number, description: string } {
+  // Rating out of 5
+  let rating = 0;
+  let description = "";
+  
+  // Wave height scoring (ideal 2-6ft for most surfers)
+  if (waveHeightFt >= 2 && waveHeightFt <= 6) {
+    rating += 2.5;
+    description = "Good height";
+  } else if (waveHeightFt >= 1 && waveHeightFt < 2) {
+    rating += 1.5;
+    description = "Small waves";
+  } else if (waveHeightFt > 6 && waveHeightFt <= 10) {
+    rating += 2;
+    description = "Large waves";
+  } else if (waveHeightFt > 10) {
+    rating += 1;
+    description = "Very large - advanced only";
+  } else {
+    rating += 0.5;
+    description = "Very small - flat";
+  }
+  
+  // Period scoring (longer period = better quality)
+  if (periodS >= 12) {
+    rating += 2.5;
+    description += ", excellent period";
+  } else if (periodS >= 10) {
+    rating += 2;
+    description += ", good period";
+  } else if (periodS >= 8) {
+    rating += 1.5;
+    description += ", moderate period";
+  } else if (periodS >= 6) {
+    rating += 1;
+    description += ", short period";
+  } else {
+    rating += 0.5;
+    description += ", very short period";
+  }
+  
+  return { rating, description };
+}
+
+// Helper function to convert wave direction to compass direction
+function getWaveDirectionName(degrees: number): string {
+  if (degrees >= 337.5 || degrees < 22.5) return "N";
+  if (degrees >= 22.5 && degrees < 67.5) return "NE";
+  if (degrees >= 67.5 && degrees < 112.5) return "E";
+  if (degrees >= 112.5 && degrees < 157.5) return "SE";
+  if (degrees >= 157.5 && degrees < 202.5) return "S";
+  if (degrees >= 202.5 && degrees < 247.5) return "SW";
+  if (degrees >= 247.5 && degrees < 292.5) return "W";
+  if (degrees >= 292.5 && degrees < 337.5) return "NW";
+  return "N";
 }
 
 export function computeOutdoorIndex(weather: any): { index: number; note: string } {
@@ -578,14 +771,14 @@ export async function analyzeMultipleSpots(
     const spots = spotNames.map(name => {
       const spot = findSpot(name);
       if (!spot) throw new Error(`Spot "${name}" not found`);
-      return spot;
+      return spot!;
     });
 
     // Analyze each spot
     const spotAnalyses: SpotAnalysis[] = [];
     
     for (let i = 0; i < spots.length; i++) {
-      const spot = spots[i];
+      const spot = spots[i]!;
       const beachType = beachTypes?.[i] || 'mixed';
       
       try {
@@ -726,19 +919,19 @@ function generateComparison(spots: SpotAnalysis[]): MultiSpotAnalysis['compariso
     current.beachScore.waves > best.beachScore.waves ? current : best
   );
   
-  const bestFamily = validSpots
-    .filter(s => s.type === 'family')
-    .reduce((best, current) => 
-      current.beachScore.overall > best.beachScore.overall ? current : best,
-      validSpots[0] // fallback
-    );
+  const familySpots = validSpots.filter(s => s.type === 'family');
+  const bestFamily = familySpots.length > 0 
+    ? familySpots.reduce((best, current) => 
+        current.beachScore.overall > best.beachScore.overall ? current : best
+      )
+    : null;
   
-  const bestSnorkel = validSpots
-    .filter(s => s.type === 'snorkel')
-    .reduce((best, current) => 
-      current.beachScore.overall > best.beachScore.overall ? current : best,
-      validSpots[0] // fallback
-    );
+  const snorkelSpots = validSpots.filter(s => s.type === 'snorkel');
+  const bestSnorkel = snorkelSpots.length > 0 
+    ? snorkelSpots.reduce((best, current) => 
+        current.beachScore.overall > best.beachScore.overall ? current : best
+      )
+    : null;
 
   // Generate rankings
   const rankings = validSpots
@@ -755,8 +948,8 @@ function generateComparison(spots: SpotAnalysis[]): MultiSpotAnalysis['compariso
     best_overall: bestOverall.name,
     best_weather: bestWeather.name,
     best_surf: bestSurf.name,
-    best_family: bestFamily.name,
-    best_snorkel: bestSnorkel.name,
+    best_family: bestFamily?.name || "No family spots",
+    best_snorkel: bestSnorkel?.name || "No snorkel spots",
     rankings
   };
 }
@@ -858,4 +1051,89 @@ function generateMultiSpotRecommendations(spots: SpotAnalysis[]): string[] {
   }
 
   return recommendations;
+}
+
+/**
+ * Get sunrise/sunset times for a location
+ */
+export async function getSunTimes(lat: number, lon: number): Promise<any> {
+  try {
+    const response = await fetch(
+      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=sunrise,sunset,sunshine_duration&timezone=auto&forecast_days=1`
+    );
+    
+    if (!response.ok) {
+      throw new Error(`Sun times API error: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    
+    if (!data.daily || !data.daily.sunrise || !data.daily.sunset) {
+      throw new Error('Invalid sun times data received');
+    }
+    
+    const sunrise = data.daily.sunrise[0];
+    const sunset = data.daily.sunset[0];
+    const sunshineDuration = data.daily.sunshine_duration[0]; // seconds
+    
+    // Parse times and calculate day length
+    const sunriseTime = new Date(sunrise);
+    const sunsetTime = new Date(sunset);
+    const dayLengthMs = sunsetTime.getTime() - sunriseTime.getTime();
+    const dayLengthHours = Math.floor(dayLengthMs / (1000 * 60 * 60));
+    const dayLengthMinutes = Math.floor((dayLengthMs % (1000 * 60 * 60)) / (1000 * 60));
+    
+    // Format times for display
+    const formatTime = (date: Date) => {
+      return date.toLocaleTimeString('en-US', { 
+        hour: 'numeric', 
+        minute: '2-digit',
+        hour12: true 
+      });
+    };
+    
+    // Calculate golden hour times (1 hour after sunrise, 1 hour before sunset)
+    const goldenHourStart = new Date(sunriseTime.getTime() + (60 * 60 * 1000));
+    const goldenHourEnd = new Date(sunsetTime.getTime() - (60 * 60 * 1000));
+    
+    return {
+      location: `${lat.toFixed(2)}, ${lon.toFixed(2)}`,
+      date: sunrise.split('T')[0],
+      sunrise: {
+        time: sunrise,
+        formatted: formatTime(sunriseTime),
+        hour_24: sunriseTime.getHours()
+      },
+      sunset: {
+        time: sunset,
+        formatted: formatTime(sunsetTime),
+        hour_24: sunsetTime.getHours()
+      },
+      day_length: {
+        hours: dayLengthHours,
+        minutes: dayLengthMinutes,
+        total_minutes: Math.floor(dayLengthMs / (1000 * 60)),
+        formatted: `${dayLengthHours}h ${dayLengthMinutes}m`
+      },
+      golden_hour: {
+        start: {
+          time: goldenHourStart.toISOString(),
+          formatted: formatTime(goldenHourStart),
+          hour_24: goldenHourStart.getHours()
+        },
+        end: {
+          time: goldenHourEnd.toISOString(),
+          formatted: formatTime(goldenHourEnd),
+          hour_24: goldenHourEnd.getHours()
+        }
+      },
+      sunshine_duration_hours: Math.round(sunshineDuration / 3600),
+      timezone: data.timezone,
+      utc_offset_seconds: data.utc_offset_seconds
+    };
+    
+  } catch (error) {
+    console.error('Error fetching sun times:', error);
+    throw new Error(`Failed to get sun times: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
 }

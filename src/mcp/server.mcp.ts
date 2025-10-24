@@ -3,7 +3,7 @@ import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { findSpot, recommendBeaches } from "../utils/spots.js";
-import { getWeather, getSurf, computeOutdoorIndex, getTides, getUVIndex, calculateBeachScore, analyzeMultipleSpots } from "./tools";
+import { getWeather, getSurf, computeOutdoorIndex, getTides, getUVIndex, calculateBeachScore, analyzeMultipleSpots, getSunTimes } from "./tools";
 
 const app = express();
 app.use(express.json());
@@ -143,13 +143,19 @@ server.registerTool(
     }
   },
   async ({ family, surf, snorkel, scenic, island }: { 
-    family?: boolean; 
-    surf?: boolean; 
-    snorkel?: boolean; 
-    scenic?: boolean; 
-    island?: string; 
+    family?: boolean | undefined; 
+    surf?: boolean | undefined; 
+    snorkel?: boolean | undefined; 
+    scenic?: boolean | undefined; 
+    island?: string | undefined; 
   }) => {
-    const beaches = recommendBeaches({ family, surf, snorkel, scenic, island });
+    const beaches = recommendBeaches({ 
+      family: family ?? undefined, 
+      surf: surf ?? undefined, 
+      snorkel: snorkel ?? undefined, 
+      scenic: scenic ?? undefined, 
+      island: island ?? undefined 
+    });
     return {
       content: [{ type: "text", text: JSON.stringify(beaches) }],
       structuredContent: beaches
@@ -173,8 +179,8 @@ server.registerTool(
   async ({ lat, lon, beachType = 'mixed', crowdLevel }: { 
     lat: number; 
     lon: number; 
-    beachType?: 'family' | 'surf' | 'snorkel' | 'scenic' | 'mixed';
-    crowdLevel?: number;
+    beachType?: 'family' | 'surf' | 'snorkel' | 'scenic' | 'mixed' | undefined;
+    crowdLevel?: number | undefined;
   }) => {
     try {
       // Get all the data needed for scoring
@@ -214,7 +220,7 @@ server.registerTool(
   },
   async ({ spotNames, beachTypes }: { 
     spotNames: string[];
-    beachTypes?: Array<'surf' | 'family' | 'snorkel' | 'scenic' | 'mixed'>;
+    beachTypes?: Array<'surf' | 'family' | 'snorkel' | 'scenic' | 'mixed'> | undefined;
   }) => {
     try {
       const analysis = await analyzeMultipleSpots(spotNames, beachTypes);
@@ -229,6 +235,23 @@ server.registerTool(
         structuredContent: { error: error.message }
       };
     }
+  }
+);
+
+// tool: getSunTimes
+server.registerTool(
+  "getSunTimes",
+  {
+    title: "Get sunrise/sunset times",
+    description: "Get sunrise, sunset, day length, and golden hour times for a location",
+    inputSchema: { lat: z.number(), lon: z.number() }
+  },
+  async ({ lat, lon }: { lat: number; lon: number }) => {
+    const data = await getSunTimes(lat, lon);
+    return {
+      content: [{ type: "text", text: JSON.stringify(data) }],
+      structuredContent: data
+    };
   }
 );
 

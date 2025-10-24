@@ -1,73 +1,93 @@
-# Agent Sandbox
+# Hawaii AI Agent 🌺
 
-A safe Docker-based development environment for running AI agent code in isolation.
+An intelligent beach and surf advisor powered by MCP (Model Context Protocol) and Google Gemini AI.
 
 ## 🎯 What is this?
 
-This is a **sandboxed environment** that lets you run code from AI agents (or any untrusted source) without risking your actual computer. Docker creates an isolated mini-computer where everything runs safely contained.
+A **portfolio project** demonstrating MCP server integration with AI agents. The system provides real-time weather, surf conditions, and beach recommendations for Hawaii locations using live API data and intelligent tool orchestration.
 
-## 🚀 How to use on any machine
+## 🚀 Quick Start
 
-### Prerequisites
-- Docker Desktop installed and running
-- VS Code or Cursor editor
+### Local Development
+1. Clone this repository
+2. Open in VS Code/Cursor and click **"Reopen in Container"**
+3. Start services: `./hawaii start` (from local terminal)
+4. Visit: `http://localhost:3000`
 
-### Steps
-1. Clone/open this project folder
-2. Open folder in VS Code/Cursor
-3. When prompted, click **"Reopen in Container"**
-4. Wait ~30 seconds for the first build
-5. You're in! 🎉
+### Services
+- **Frontend**: Next.js app on port 3000
+- **Backend API**: Express server on port 4000  
+- **MCP Server**: Tool server on port 4100
 
-### Verify you're in Docker
-Run this in the terminal:
-```bash
-[ -f /.dockerenv ] && echo "✅ In Docker" || echo "❌ Not in Docker"
+## 🛠️ Tech Stack
+
+- **Frontend**: Next.js 15, Tailwind CSS v4, Turbopack
+- **Backend**: Node.js, Express, TypeScript
+- **AI**: Google Gemini API, MCP (Model Context Protocol)
+- **APIs**: Open-Meteo (weather/surf), NOAA (tides), EPA (UV)
+- **Container**: Docker, VS Code Dev Containers
+
+## 🌊 MCP Tools
+
+The system includes 9 intelligent tools:
+
+- `resolveSpot` - Location resolution for Hawaii spots
+- `getWeather` - Hourly weather forecasts + current conditions
+- `getSurf` - Wave conditions with quality ratings (0-5 scale)
+- `getSunTimes` - Sunrise/sunset/golden hour times
+- `getTides` - Tide levels and timing
+- `getUVIndex` - UV safety recommendations
+- `getBeachScore` - Comprehensive beach scoring (0-10 scale)
+- `analyzeMultipleSpots` - Multi-location comparison
+- `recommendBeaches` - Smart beach recommendations
+
+## 🎯 Current Status
+
+**Phase 0.5 Complete** ✅
+- Enhanced toolkit with hourly data
+- Smart fast routing vs complex questions
+- Real-time API integration
+- Comprehensive beach intelligence
+
+**Next Phase**: Day Planner with Google Calendar export
+
+## 📁 Project Structure
+
+```
+src/
+├── mcp/
+│   ├── server.mcp.ts    # MCP server with tool definitions
+│   └── tools.ts         # Tool implementations
+├── agent/
+│   └── gemini-agent.ts  # AI agent with smart routing
+├── server.ts            # Backend API server
+└── utils/
+    └── spots.ts         # Hawaii location data
 ```
 
-Or check the hostname (should be a random hash like `6e11238f77f3`):
+## 🔧 Development
+
+**Start all services:**
 ```bash
-hostname
+./hawaii start
 ```
 
-## 📦 What's included
-
-- **Node.js v20** (Debian Bookworm base)
-- **Non-root user** (runs as `node` user for security)
-- **Port 4000** forwarded (for future web apps)
-- **pnpm** package manager
-
-## 🔧 Configuration
-
-The setup is defined in:
-- `.devcontainer/Dockerfile` — The container image recipe
-- `.devcontainer/devcontainer.json` — VS Code/Cursor dev container config
-
-## 💡 Why Docker?
-
-- **Isolated** — Can't access your personal files
-- **Safe** — Can't mess with your system
-- **Disposable** — Easy to reset if something breaks
-- **Reproducible** — Same environment on any machine
-
-## 📝 Quick Reference
-
-**Check current user:**
+**View logs:**
 ```bash
-whoami
+./hawaii logs
 ```
 
-**Check Node version:**
+**Stop services:**
 ```bash
-node --version
+./hawaii stop
 ```
 
-**Check working directory:**
+**Check status:**
 ```bash
-pwd
+./hawaii status
 ```
 
 ---
 
-**TL;DR:** Open this folder in VS Code/Cursor → Click "Reopen in Container" → You're in a safe sandbox! 🛡️
+**Portfolio Project**: Demonstrates MCP integration, AI tool orchestration, and real-time data processing for beach/surf intelligence.
 

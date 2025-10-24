@@ -200,6 +200,29 @@ function fastRouteQuestion(question: string): any[] | null {
     ];
   }
   
+  // Sun times questions
+  if ((q.includes('sunrise') || q.includes('sunset') || q.includes('golden hour') || q.includes('day length')) && q.includes('waikiki')) {
+    return [
+      { tool: 'resolveSpot', args: { spot: 'Waikiki' } },
+      { tool: 'getSunTimes', args: { lat: 21.2766, lon: -157.8269 } }
+    ];
+  }
+  
+  if ((q.includes('sunrise') || q.includes('sunset') || q.includes('golden hour') || q.includes('day length')) && (q.includes('north shore') || q.includes('northshore'))) {
+    return [
+      { tool: 'resolveSpot', args: { spot: 'North Shore' } },
+      { tool: 'getSunTimes', args: { lat: 21.6649, lon: -158.0532 } }
+    ];
+  }
+  
+  // General sun times questions (for any location)
+  if ((q.includes('sunrise') || q.includes('sunset') || q.includes('golden hour') || q.includes('day length')) && !q.includes('waikiki') && !q.includes('north shore') && !q.includes('northshore')) {
+    return [
+      { tool: 'resolveSpot', args: { spot: 'Waikiki' } }, // Default to Waikiki if no specific location
+      { tool: 'getSunTimes', args: { lat: 21.2766, lon: -157.8269 } }
+    ];
+  }
+  
   // Best beach questions
   if (q.includes('best beach') || q.includes('recommend beach')) {
     return [
@@ -215,13 +238,46 @@ function fastRouteQuestion(question: string): any[] | null {
 function fastSynthesizeResponse(toolResults: any[], question: string): string | null {
   const q = question.toLowerCase();
   
+  // Check if question asks about future/hourly conditions
+  const askingAboutFuture = q.includes('next') || q.includes('hour') || q.includes('later') || 
+                           q.includes('afternoon') || q.includes('morning') || q.includes('tonight') ||
+                           q.includes('today') || q.includes('forecast');
+  
   // Only use fast synthesis for very specific, simple questions
-  // Weather responses - only for direct weather questions
+  // Weather responses - check if asking for hourly forecast
   if ((q.includes('weather') || q.includes('temperature') || q.includes('temp')) && 
       !q.includes('should') && !q.includes('recommend') && !q.includes('advice') && 
       !q.includes('beginner') && !q.includes('safety') && !q.includes('first time')) {
     const weather = toolResults.find(r => r.tool === 'getWeather')?.result;
     if (weather) {
+      // If asking about future AND we have hourly forecast data, use it
+      if (askingAboutFuture && weather.hourly_forecast && weather.hourly_forecast.length > 0) {
+        const summary = weather.forecast_summary;
+        const location = weather.location || 'the area';
+        
+        let response = `Weather forecast for ${location} (next ${weather.hourly_forecast.length} hours):\n`;
+        response += `High: ${summary.high_f}°F, Low: ${summary.low_f}°F, Avg wind: ${summary.avg_wind_mph.toFixed(1)}mph.\n`;
+        
+        if (summary.rain_expected) {
+          response += `Rain expected. `;
+        } else {
+          response += `No rain expected. `;
+        }
+        
+        if (summary.best_hours && summary.best_hours.length > 0) {
+          response += `Best times: ${summary.best_hours.join(', ')}.`;
+        }
+        
+        response += `\n\nHourly breakdown:\n`;
+        weather.hourly_forecast.forEach((hour: any) => {
+          const emoji = hour.is_good_weather ? '☀️' : '⛅';
+          response += `${emoji} ${hour.time}: ${hour.temperature_f}°F, ${hour.wind_mph}mph wind, ${hour.conditions}\n`;
+        });
+        
+        return response;
+      }
+      
+      // Otherwise return current conditions
       const temp = weather.current_converted?.temperature_fahrenheit || weather.current?.temperature_2m;
       const wind = weather.current_converted?.wind_speed_mph || weather.current?.wind_speed_10m;
       const precip = weather.current?.precipitation || 0;
@@ -241,6 +297,30 @@ function fastSynthesizeResponse(toolResults: any[], question: string): string | 
     const tides = toolResults.find(r => r.tool === 'getTides')?.result;
     
     if (surf) {
+      // If asking about future AND we have hourly forecast data, use it
+      if (askingAboutFuture && surf.hourly_forecast && surf.hourly_forecast.length > 0) {
+        const summary = surf.surf_summary;
+        const location = 'the spot';
+        
+        let response = `Surf forecast for ${location} (next ${surf.hourly_forecast.length} hours):\n`;
+        response += `Waves: ${summary.min_wave_height_ft.toFixed(1)}-${summary.max_wave_height_ft.toFixed(1)}ft (avg ${summary.avg_wave_height_ft.toFixed(1)}ft), `;
+        response += `${summary.avg_wave_period_s.toFixed(1)}s period from ${summary.dominant_direction}.\n`;
+        response += `Trend: ${summary.trend}. `;
+        
+        if (summary.best_hours && summary.best_hours.length > 0) {
+          response += `Best times: ${summary.best_hours.join(', ')}.`;
+        }
+        
+        response += `\n\nHourly breakdown:\n`;
+        surf.hourly_forecast.forEach((hour: any) => {
+          const emoji = hour.good_for_surfing ? '🏄' : '🌊';
+          response += `${emoji} ${hour.time}: ${hour.wave_height_ft.toFixed(1)}ft, ${hour.wave_period_s}s, ${hour.wave_direction} - ${hour.quality_description} (${hour.quality}/5)\n`;
+        });
+        
+        return response;
+      }
+      
+      // Otherwise return current conditions
       const waveHeight = surf.hourly_converted?.wave_height_feet?.[0] || (surf.hourly?.wave_height?.[0] ? surf.hourly.wave_height[0] * 3.28 : 0);
       const wavePeriod = surf.hourly?.wave_period?.[0] || 0;
       const waveDirection = surf.hourly?.wave_direction?.[0] || 0;
@@ -283,6 +363,63 @@ function fastSynthesizeResponse(toolResults: any[], question: string): string | 
     const score = toolResults.find(r => r.tool === 'getBeachScore')?.result;
     if (score) {
       return `Beach score: ${score.overall}/10. ${score.recommendations?.[0] || 'Good conditions today!'}`;
+    }
+  }
+  
+  // Comparison questions (e.g., "2pm or 5pm surf time")
+  if ((q.includes(' or ') || q.includes('" or "') || q.includes("' or '")) && (q.includes('pm') || q.includes('am') || q.includes('hour'))) {
+    const surf = toolResults.find(r => r.tool === 'getSurf')?.result;
+    const weather = toolResults.find(r => r.tool === 'getWeather')?.result;
+    
+    if (surf && surf.hourly_forecast && surf.hourly_forecast.length > 0) {
+      // Extract times from question (handle quotes and various formats)
+      const timeMatches = q.match(/(\d{1,2})(am|pm)/gi);
+      if (timeMatches && timeMatches.length >= 2) {
+        const times = timeMatches.map(match => {
+          const [, hour, period] = match.match(/(\d{1,2})(am|pm)/i) || [];
+          let hour24 = parseInt(hour);
+          if (period.toLowerCase() === 'pm' && hour24 !== 12) hour24 += 12;
+          if (period.toLowerCase() === 'am' && hour24 === 12) hour24 = 0;
+          return { original: match, hour24, hour: parseInt(hour), period: period.toLowerCase() };
+        });
+        
+        let response = `Surf comparison for ${times.map(t => t.original).join(' vs ')}:\n\n`;
+        
+        times.forEach(time => {
+          const hourData = surf.hourly_forecast.find((h: any) => h.hour_24 === time.hour24);
+          if (hourData) {
+            const emoji = hourData.good_for_surfing ? '🏄' : '🌊';
+            response += `${emoji} ${time.original}: ${hourData.wave_height_ft.toFixed(1)}ft, ${hourData.wave_period_s}s, ${hourData.wave_direction} - ${hourData.quality_description} (${hourData.quality}/5)\n`;
+          }
+        });
+        
+        // Add recommendation
+        const bestTime = times.reduce((best, current) => {
+          const currentData = surf.hourly_forecast.find((h: any) => h.hour_24 === current.hour24);
+          const bestData = surf.hourly_forecast.find((h: any) => h.hour_24 === best.hour24);
+          return (currentData?.quality || 0) > (bestData?.quality || 0) ? current : best;
+        });
+        
+        const bestData = surf.hourly_forecast.find((h: any) => h.hour_24 === bestTime.hour24);
+        if (bestData) {
+          response += `\n🏆 Best choice: ${bestTime.original} (${bestData.quality}/5 quality)`;
+        }
+        
+        return response;
+      }
+    }
+  }
+  
+  // Sun times responses
+  if (q.includes('sunrise') || q.includes('sunset') || q.includes('golden hour') || q.includes('day length')) {
+    const sunTimes = toolResults.find(r => r.tool === 'getSunTimes')?.result;
+    if (sunTimes) {
+      let response = `Sun times for today:\n`;
+      response += `🌅 Sunrise: ${sunTimes.sunrise.formatted}\n`;
+      response += `🌇 Sunset: ${sunTimes.sunset.formatted}\n`;
+      response += `⏰ Day length: ${sunTimes.day_length.formatted}\n`;
+      response += `✨ Golden hour: ${sunTimes.golden_hour.start.formatted} - ${sunTimes.golden_hour.end.formatted}`;
+      return response;
     }
   }
   
