@@ -109,14 +109,211 @@ You think: "I need to check Waikiki conditions"
 
 Now help the user!`;
 
+// Fast router - replaces Gemini planning for common questions
+function fastRouteQuestion(question: string): any[] | null {
+  const q = question.toLowerCase();
+  
+  // Weather questions
+  if (q.includes('weather') && q.includes('waikiki')) {
+    return [
+      { tool: 'resolveSpot', args: { spot: 'Waikiki' } },
+      { tool: 'getWeather', args: { lat: 21.2766, lon: -157.8269 } }
+    ];
+  }
+  
+  if (q.includes('weather') && q.includes('north shore')) {
+    return [
+      { tool: 'resolveSpot', args: { spot: 'North Shore' } },
+      { tool: 'getWeather', args: { lat: 21.6649, lon: -158.0532 } }
+    ];
+  }
+  
+  if (q.includes('weather') && q.includes('kailua')) {
+    return [
+      { tool: 'resolveSpot', args: { spot: 'Kailua Beach' } },
+      { tool: 'getWeather', args: { lat: 21.4010, lon: -157.7394 } }
+    ];
+  }
+  
+  // Temperature questions
+  if (q.includes('temperature') || q.includes('temp')) {
+    if (q.includes('waikiki')) {
+      return [
+        { tool: 'resolveSpot', args: { spot: 'Waikiki' } },
+        { tool: 'getWeather', args: { lat: 21.2766, lon: -157.8269 } }
+      ];
+    }
+    if (q.includes('north shore')) {
+      return [
+        { tool: 'resolveSpot', args: { spot: 'North Shore' } },
+        { tool: 'getWeather', args: { lat: 21.6649, lon: -158.0532 } }
+      ];
+    }
+  }
+  
+  // Surf questions
+  if (q.includes('surf') && q.includes('waikiki')) {
+    return [
+      { tool: 'resolveSpot', args: { spot: 'Waikiki' } },
+      { tool: 'getWeather', args: { lat: 21.2766, lon: -157.8269 } },
+      { tool: 'getSurf', args: { lat: 21.2766, lon: -157.8269 } },
+      { tool: 'getTides', args: { lat: 21.2766, lon: -157.8269 } }
+    ];
+  }
+  
+  if (q.includes('surf') && q.includes('north shore')) {
+    return [
+      { tool: 'resolveSpot', args: { spot: 'North Shore' } },
+      { tool: 'getWeather', args: { lat: 21.6649, lon: -158.0532 } },
+      { tool: 'getSurf', args: { lat: 21.6649, lon: -158.0532 } },
+      { tool: 'getTides', args: { lat: 21.6649, lon: -158.0532 } }
+    ];
+  }
+  
+  // Wave questions
+  if (q.includes('wave') && q.includes('waikiki')) {
+    return [
+      { tool: 'resolveSpot', args: { spot: 'Waikiki' } },
+      { tool: 'getSurf', args: { lat: 21.2766, lon: -157.8269 } },
+      { tool: 'getTides', args: { lat: 21.2766, lon: -157.8269 } }
+    ];
+  }
+  
+  if (q.includes('wave') && q.includes('north shore')) {
+    return [
+      { tool: 'resolveSpot', args: { spot: 'North Shore' } },
+      { tool: 'getSurf', args: { lat: 21.6649, lon: -158.0532 } },
+      { tool: 'getTides', args: { lat: 21.6649, lon: -158.0532 } }
+    ];
+  }
+  
+  // Beach score questions
+  if (q.includes('score') && q.includes('waikiki')) {
+    return [
+      { tool: 'getBeachScore', args: { beach: 'Waikiki Beach', lat: 21.2766, lon: -157.8269, activity: 'surfing' } }
+    ];
+  }
+  
+  if (q.includes('score') && q.includes('north shore')) {
+    return [
+      { tool: 'getBeachScore', args: { beach: 'North Shore', lat: 21.6649, lon: -158.0532, activity: 'surfing' } }
+    ];
+  }
+  
+  // Best beach questions
+  if (q.includes('best beach') || q.includes('recommend beach')) {
+    return [
+      { tool: 'recommendBeaches', args: { criteria: { activity: 'family' } } }
+    ];
+  }
+  
+  // Return null for complex questions that need Gemini
+  return null;
+}
+
+// Fast response synthesizer - replaces Gemini synthesis for simple questions
+function fastSynthesizeResponse(toolResults: any[], question: string): string | null {
+  const q = question.toLowerCase();
+  
+  // Only use fast synthesis for very specific, simple questions
+  // Weather responses - only for direct weather questions
+  if ((q.includes('weather') || q.includes('temperature') || q.includes('temp')) && 
+      !q.includes('should') && !q.includes('recommend') && !q.includes('advice') && 
+      !q.includes('beginner') && !q.includes('safety') && !q.includes('first time')) {
+    const weather = toolResults.find(r => r.tool === 'getWeather')?.result;
+    if (weather) {
+      const temp = weather.current_converted?.temperature_fahrenheit || weather.current?.temperature_2m;
+      const wind = weather.current_converted?.wind_speed_mph || weather.current?.wind_speed_10m;
+      const precip = weather.current?.precipitation || 0;
+      const location = weather.location || 'the area';
+      
+      return `Weather in ${location}: ${temp}°F, ${wind}mph winds, ${precip > 0 ? 'rain expected' : 'no rain'}.`;
+    }
+  }
+  
+  // Surf responses - only for direct surf condition questions
+  if ((q.includes('surf') || q.includes('wave')) && 
+      !q.includes('should') && !q.includes('recommend') && !q.includes('advice') && 
+      !q.includes('beginner') && !q.includes('safety') && !q.includes('first time') &&
+      !q.includes('what should') && !q.includes('what to know')) {
+    const surf = toolResults.find(r => r.tool === 'getSurf')?.result;
+    const weather = toolResults.find(r => r.tool === 'getWeather')?.result;
+    const tides = toolResults.find(r => r.tool === 'getTides')?.result;
+    
+    if (surf) {
+      const waveHeight = surf.hourly_converted?.wave_height_feet?.[0] || (surf.hourly?.wave_height?.[0] ? surf.hourly.wave_height[0] * 3.28 : 0);
+      const wavePeriod = surf.hourly?.wave_period?.[0] || 0;
+      const waveDirection = surf.hourly?.wave_direction?.[0] || 0;
+      
+      let response = `Surf conditions: ${waveHeight.toFixed(1)}ft waves, ${wavePeriod.toFixed(1)}s period`;
+      
+      if (waveDirection) {
+        const direction = getWindDirection(waveDirection);
+        response += ` from the ${direction}`;
+      }
+      
+      if (tides) {
+        const tideLevel = tides.current?.tide_level || 0;
+        response += `. Tide level: ${tideLevel.toFixed(1)}ft`;
+      }
+      
+      if (weather) {
+        const temp = weather.current_converted?.temperature_fahrenheit || weather.current?.temperature_2m;
+        const wind = weather.current_converted?.wind_speed_mph || weather.current?.wind_speed_10m;
+        response += `. Weather: ${temp}°F, ${wind}mph winds`;
+      }
+      
+      // Add surf recommendation
+      if (waveHeight > 6) {
+        response += '. Conditions are challenging - experienced surfers only.';
+      } else if (waveHeight > 3) {
+        response += '. Good surf conditions for intermediate surfers.';
+      } else if (waveHeight > 1) {
+        response += '. Gentle conditions perfect for beginners.';
+      } else {
+        response += '. Very calm conditions - great for learning.';
+      }
+      
+      return response;
+    }
+  }
+  
+  // Beach score responses - only for direct score questions
+  if (q.includes('score') && !q.includes('should') && !q.includes('recommend') && !q.includes('advice')) {
+    const score = toolResults.find(r => r.tool === 'getBeachScore')?.result;
+    if (score) {
+      return `Beach score: ${score.overall}/10. ${score.recommendations?.[0] || 'Good conditions today!'}`;
+    }
+  }
+  
+  // Return null for complex responses that need Gemini
+  return null;
+}
+
+// Helper function to convert wind direction degrees to compass direction
+function getWindDirection(degrees: number): string {
+  const directions = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+  const index = Math.round(degrees / 22.5) % 16;
+  return directions[index] || 'N';
+}
+
 // Main agent function
 export async function askAgent(question: string): Promise<string> {
   try {
     console.log("\n🤔 User question:", question);
     console.log("🔑 API Key loaded:", process.env.GEMINI_API_KEY ? "YES" : "NO");
     
-    // Phase 1: Let AI decide what tools to call
-    const planningPrompt = `${SYSTEM_PROMPT}
+    // Phase 1: Try fast routing first, fallback to Gemini for complex questions
+    let toolCalls: any[] = [];
+    
+    const fastRouteResult = fastRouteQuestion(question);
+    if (fastRouteResult) {
+      console.log("⚡ Using fast routing for simple question...");
+      toolCalls = fastRouteResult;
+    } else {
+      console.log("🧠 Using Gemini for complex question...");
+      // Phase 1: Let AI decide what tools to call
+      const planningPrompt = `${SYSTEM_PROMPT}
 
 **USER QUESTION:** "${question}"
 
@@ -167,19 +364,19 @@ For "How are the waves at North Shore?":
 
 Your JSON array:`;
 
-    const planResult = await model.generateContent(planningPrompt);
-    const planText = planResult.response.text();
-    console.log("🧠 AI Plan:", planText);
-    
-    // Parse tool calls
-    let toolCalls: any[] = [];
-    try {
-      const jsonMatch = planText.match(/\[[\s\S]*\]/);
-      if (jsonMatch) {
-        toolCalls = JSON.parse(jsonMatch[0]);
+      const planResult = await model.generateContent(planningPrompt);
+      const planText = planResult.response.text();
+      console.log("🧠 AI Plan:", planText);
+      
+      // Parse tool calls
+      try {
+        const jsonMatch = planText.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          toolCalls = JSON.parse(jsonMatch[0]);
+        }
+      } catch (e) {
+        console.error("Failed to parse tool calls, trying without tools");
       }
-    } catch (e) {
-      console.error("Failed to parse tool calls, trying without tools");
     }
     
     // Phase 2: Execute tool calls
@@ -278,8 +475,17 @@ Your JSON array:`;
       }
     }
     
-    // Phase 3: Generate final answer based on tool results
-    const answerPrompt = `${SYSTEM_PROMPT}
+    // Phase 3: Try fast synthesis first, fallback to Gemini for complex responses
+    let answer: string;
+    
+    const fastResponse = fastSynthesizeResponse(toolResults, question);
+    if (fastResponse) {
+      console.log("⚡ Using fast template for simple response...");
+      answer = fastResponse;
+    } else {
+      console.log("🧠 Using Gemini for complex synthesis...");
+      // Generate final answer based on tool results
+      const answerPrompt = `${SYSTEM_PROMPT}
 
 **USER QUESTION:** "${question}"
 
@@ -314,17 +520,18 @@ Sentence 3 (optional): One brief tip, caution, or access restriction (e.g., "Bel
 
 Your 2-3 sentence response:`;
 
-    const answerResult = await model.generateContent(answerPrompt);
-    let answer = answerResult.response.text().trim();
-    
-    // Force brevity: Keep only first 3 sentences if too long
-    const sentences = answer.split(/(?<=[.!?])\s+/).filter(s => s.trim());
-    if (sentences.length > 4) {
-      console.log("⚠️  Response too long, keeping first 3 sentences...");
-      answer = sentences.slice(0, 3).join(' ');
+      const answerResult = await model.generateContent(answerPrompt);
+      answer = answerResult.response.text().trim();
+      
+      // Force brevity: Keep only first 3 sentences if too long
+      const sentences = answer.split(/(?<=[.!?])\s+/).filter(s => s.trim());
+      if (sentences.length > 4) {
+        console.log("⚠️  Response too long, keeping first 3 sentences...");
+        answer = sentences.slice(0, 3).join(' ');
+      }
     }
     
-    console.log("💬 AI Answer:", answer);
+    console.log("💬 Final Answer:", answer);
     
     return answer;
     
