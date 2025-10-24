@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Bruno_Ace } from "next/font/google";
+import "leaflet/dist/leaflet.css";
 import "./globals.css";
 
 const brunoAce = Bruno_Ace({ 

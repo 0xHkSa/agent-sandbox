@@ -5,11 +5,11 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "tsx src/index.ts",
     "dev:server": "tsx src/server.ts",
-    "cli": "tsx src/cli.ts",
     "dev:mcp": "tsx src/mcp/server.mcp.ts",
-    "mcp:server": "tsx src/mcp/server.mcp.ts"
+    "mcp:server": "tsx src/mcp/server.mcp.ts",
+    "start:all": "./start-dev.sh",
+    "stop:all": "./stop-dev.sh"
   },
   "keywords": [],
   "author": "",
