@@ -8,26 +8,135 @@ import rateLimit from "express-rate-limit";
 
 const app = express();
 
+// Hawaii data cache for proactive loading
+let hawaiiDataCache = {
+  beaches: {},
+  weather: {},
+  surf: {},
+  tides: {},
+  lastUpdated: null,
+  loading: false
+};
+
+// Hawaii beach coordinates for proactive loading
+const HAWAII_BEACHES = [
+  { name: 'Waikiki', lat: 21.2766, lon: -157.8269 },
+  { name: 'North Shore', lat: 21.6649, lon: -158.0532 },
+  { name: 'Kailua Beach', lat: 21.4010, lon: -157.7394 },
+  { name: 'Lanikai Beach', lat: 21.3927, lon: -157.7160 },
+  { name: 'Hanauma Bay', lat: 21.2706, lon: -157.6939 },
+  { name: 'Ala Moana', lat: 21.2906, lon: -157.8422 },
+  { name: 'Sandy Beach', lat: 21.2847, lon: -157.6728 },
+  { name: 'Makapuu Beach', lat: 21.3106, lon: -157.6589 }
+];
+
+// Proactive data loading function
+async function loadAllHawaiiData() {
+  if (hawaiiDataCache.loading) {
+    console.log('⏳ Data loading already in progress...');
+    return;
+  }
+  
+  hawaiiDataCache.loading = true;
+  console.log('🚀 Starting proactive Hawaii data loading...');
+  
+  try {
+    const startTime = Date.now();
+    
+    // Load weather data for all beaches in parallel
+    console.log('🌤️ Loading weather data for all beaches...');
+    const weatherPromises = HAWAII_BEACHES.map(async (beach) => {
+      try {
+        const weather = await getWeather(beach.lat, beach.lon);
+        return { beach: beach.name, data: weather };
+      } catch (error) {
+        console.error(`❌ Failed to load weather for ${beach.name}:`, error.message);
+        return { beach: beach.name, data: null, error: error.message };
+      }
+    });
+    
+    // Load surf data for all beaches in parallel
+    console.log('🌊 Loading surf data for all beaches...');
+    const surfPromises = HAWAII_BEACHES.map(async (beach) => {
+      try {
+        const surf = await getSurf(beach.lat, beach.lon);
+        return { beach: beach.name, data: surf };
+      } catch (error) {
+        console.error(`❌ Failed to load surf for ${beach.name}:`, error.message);
+        return { beach: beach.name, data: null, error: error.message };
+      }
+    });
+    
+    // Load tide data for all beaches in parallel
+    console.log('🌊 Loading tide data for all beaches...');
+    const tidePromises = HAWAII_BEACHES.map(async (beach) => {
+      try {
+        const tides = await getTides(beach.lat, beach.lon);
+        return { beach: beach.name, data: tides };
+      } catch (error) {
+        console.error(`❌ Failed to load tides for ${beach.name}:`, error.message);
+        return { beach: beach.name, data: null, error: error.message };
+      }
+    });
+    
+    // Wait for all data to load
+    const [weatherResults, surfResults, tideResults] = await Promise.all([
+      Promise.all(weatherPromises),
+      Promise.all(surfPromises),
+      Promise.all(tidePromises)
+    ]);
+    
+    // Organize data by beach
+    const beachesData = {};
+    HAWAII_BEACHES.forEach(beach => {
+      beachesData[beach.name] = {
+        coordinates: { lat: beach.lat, lon: beach.lon },
+        weather: weatherResults.find(r => r.beach === beach.name)?.data || null,
+        surf: surfResults.find(r => r.beach === beach.name)?.data || null,
+        tides: tideResults.find(r => r.beach === beach.name)?.data || null
+      };
+    });
+    
+    // Update cache
+    hawaiiDataCache = {
+      beaches: beachesData,
+      weather: weatherResults.reduce((acc, r) => { acc[r.beach] = r.data; return acc; }, {}),
+      surf: surfResults.reduce((acc, r) => { acc[r.beach] = r.data; return acc; }, {}),
+      tides: tideResults.reduce((acc, r) => { acc[r.beach] = r.data; return acc; }, {}),
+      lastUpdated: new Date(),
+      loading: false
+    };
+    
+    const loadTime = Date.now() - startTime;
+    const successCount = weatherResults.filter(r => r.data).length;
+    
+    console.log(`✅ Hawaii data loaded successfully!`);
+    console.log(`📊 Loaded ${successCount}/${HAWAII_BEACHES.length} beaches in ${loadTime}ms`);
+    console.log(`🕒 Last updated: ${hawaiiDataCache.lastUpdated.toISOString()}`);
+    
+  } catch (error) {
+    console.error('❌ Failed to load Hawaii data:', error);
+    hawaiiDataCache.loading = false;
+  }
+}
+
 // CORS Middleware - Manual implementation (more reliable than package)
 app.use((req, res, next) => {
   const allowedOrigins = ['http://localhost:3000', 'http://127.0.0.1:3000'];
   const origin = req.headers.origin;
   
-  console.log('[CORS] Request:', req.method, req.path, 'Origin:', origin);
-  
+  // Only log CORS errors, not every request
   if (origin && allowedOrigins.includes(origin)) {
-    console.log('[CORS] Setting headers for:', origin);
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
-  } else {
-    console.log('[CORS] Origin not allowed or missing');
+  } else if (origin) {
+    console.log('[CORS] Origin not allowed:', origin);
   }
   
-  // Handle preflight
+  // Handle preflight silently
   if (req.method === 'OPTIONS') {
-    console.log('[CORS] Handling OPTIONS preflight');
     res.sendStatus(204);
     return;
   }
@@ -195,6 +304,8 @@ app.post("/ask", async (req, res) => {
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   
   const question = String(req.body?.question || "").trim();
+  const conversation = req.body?.conversation || [];
+  const sessionId = req.body?.sessionId || null;
   
   // Validation
   if (!question) {
@@ -204,9 +315,18 @@ app.post("/ask", async (req, res) => {
     return res.status(400).json({ ok: false, error: "Question too long (max 500 characters)" });
   }
   
+  // Log conversation context for debugging
+  if (conversation && conversation.length > 0) {
+    logger.info("Conversation context", { 
+      sessionId, 
+      contextLength: conversation.length,
+      lastMessage: conversation[conversation.length - 1]?.text?.substring(0, 50) + "..."
+    });
+  }
+  
   try {
-    logger.info("User question received", { question, ip: req.ip });
-    const answer = await askAgent(question);
+    logger.info("User question received", { question, sessionId, ip: req.ip });
+    const answer = await askAgent(question, conversation);
     
     logger.info("Question answered successfully", { 
       question, 
@@ -233,8 +353,27 @@ app.post("/ask", async (req, res) => {
   }
 });
 
+// Health endpoint to check data status
+app.get('/health', (req, res) => {
+  const dataAge = hawaiiDataCache.lastUpdated ? 
+    Date.now() - hawaiiDataCache.lastUpdated.getTime() : null;
+  
+  res.json({
+    status: 'healthy',
+    dataLoaded: !!hawaiiDataCache.lastUpdated,
+    dataAge: dataAge ? `${Math.round(dataAge / 1000)}s ago` : 'never',
+    beachesLoaded: Object.keys(hawaiiDataCache.beaches).length,
+    loading: hawaiiDataCache.loading,
+    lastUpdated: hawaiiDataCache.lastUpdated?.toISOString()
+  });
+});
+
 // Start server (MUST be at the end after all routes are defined!)
-app.listen(PORT, "0.0.0.0", () => {
+app.listen(PORT, "0.0.0.0", async () => {
   logger.info(`API server listening on port ${PORT}`, { port: PORT });
   console.log(`[server] Ready! CORS enabled for http://localhost:3000`);
+  
+  // Load Hawaii data on startup
+  console.log('🚀 Starting proactive data loading...');
+  await loadAllHawaiiData();
 });

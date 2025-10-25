@@ -478,10 +478,13 @@ export async function getWeather(lat: number, lon: number) {
   
   // Process hourly data - get current hour + next 8 hours
   if (data.hourly && data.hourly.time) {
+    // Use Hawaii timezone for comparison
     const now = new Date();
+    const hawaiiTime = new Date(now.toLocaleString("en-US", {timeZone: "Pacific/Honolulu"}));
+    
     const currentHourIndex = data.hourly.time.findIndex((t: string) => {
       const hourTime = new Date(t);
-      return hourTime >= now;
+      return hourTime >= hawaiiTime;
     });
     
     if (currentHourIndex >= 0) {

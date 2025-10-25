@@ -1,11 +1,12 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import AIChat from '@/components/AIChat';
 import LiveConditions from '@/components/LiveConditions';
 import RightNowSnapshot from '@/components/RightNowSnapshot';
 import HeaderWeather from '@/components/HeaderWeather';
 import LandingAnimation from '@/components/LandingAnimation';
+import FloatingChatButton from '@/components/FloatingChatButton';
+import ChatBubble from '@/components/ChatBubble';
 
 const BEACH_ACTIVITIES = [
   {
@@ -84,16 +85,6 @@ export default function Home() {
               <div className="flex items-center space-x-4 lg:space-x-6">
                 {/* Weather Widget */}
                 <HeaderWeather />
-                
-                {/* AI Assistant Button */}
-                <button 
-                  onClick={() => setShowAI(!showAI)}
-                  className="relative text-white text-sm uppercase tracking-wide transition-colors hidden sm:block px-4 py-2 rounded-lg border-2 border-teal-400/60 hover:border-teal-300 overflow-hidden group"
-                >
-                  {/* Continuous left-to-right shimmer effect */}
-                  <span className="absolute inset-0 w-full bg-gradient-to-r from-transparent via-teal-300/70 to-transparent animate-shimmer blur-sm"></span>
-                  <span className="relative z-10 group-hover:text-teal-300 transition-colors">AI GUIDE</span>
-                </button>
               </div>
             </div>
           </div>
@@ -204,20 +195,14 @@ export default function Home() {
         <div className="h-20"></div>
       </main>
 
-      {/* AI Chat Modal */}
-      {showAI && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="relative w-full max-w-4xl max-h-[90vh] overflow-auto bg-white rounded-lg shadow-2xl">
-            <button
-              onClick={() => setShowAI(false)}
-              className="absolute top-4 right-4 text-gray-500 hover:text-gray-700 text-2xl font-bold z-10"
-            >
-              ✕
-            </button>
-            <AIChat />
-          </div>
-        </div>
-      )}
+      {/* Chat Bubble */}
+      <ChatBubble isOpen={showAI} onClose={() => setShowAI(false)} />
+
+      {/* Floating Chat Button */}
+      <FloatingChatButton 
+        onClick={() => setShowAI(!showAI)} 
+        isOpen={showAI}
+      />
     </div>
   );
 }

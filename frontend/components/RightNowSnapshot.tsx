@@ -21,6 +21,23 @@ export default function RightNowSnapshot() {
     // Fetch real-time recommendations from API
     const fetchRecommendations = async () => {
       try {
+        // Check cache first (5 minute cache)
+        const cacheKey = 'beach-recommendations';
+        const cached = localStorage.getItem(cacheKey);
+        const now = Date.now();
+        
+        if (cached) {
+          const { data, timestamp } = JSON.parse(cached);
+          if (now - timestamp < 5 * 60 * 1000) { // 5 minutes
+            console.log('Using cached beach recommendations');
+            setRecommendations(data.recommendations);
+            setLastUpdate(data.lastUpdate);
+            return;
+          }
+        }
+        
+        console.log('Fetching fresh beach recommendations...');
+        
         // Get beach scores for all 13 Oahu beaches with coordinates
         const beaches = [
           { name: 'Waikiki Beach', lat: 21.2766, lon: -157.8269 },
@@ -105,11 +122,39 @@ export default function RightNowSnapshot() {
 
           // Set last update time
           const now = new Date();
-          setLastUpdate(now.toLocaleTimeString('en-US', { 
+          const lastUpdateTime = now.toLocaleTimeString('en-US', { 
             hour: 'numeric', 
             minute: '2-digit',
             hour12: true 
-          }));
+          });
+          setLastUpdate(lastUpdateTime);
+          
+          // Cache the results
+          const cacheData = {
+            recommendations: [
+              { 
+                activity: 'Best for Surfing', 
+                beach: bestSurf.beach, 
+                emoji: '🏄',
+                score: Math.round((bestSurf.data?.waves || 0))
+              },
+              { 
+                activity: 'Best for Beginners', 
+                beach: bestBeginner.beach, 
+                emoji: '🌊',
+                score: Math.round((bestBeginner.data?.overall || 0))
+              },
+              { 
+                activity: 'Least Crowded', 
+                beach: leastCrowded.beach, 
+                emoji: '🏖️',
+                score: Math.round((leastCrowded.data?.crowd_level || 0))
+              },
+            ],
+            lastUpdate: lastUpdateTime,
+            timestamp: Date.now()
+          };
+          localStorage.setItem(cacheKey, JSON.stringify(cacheData));
         } else {
           throw new Error('No valid scores');
         }
@@ -133,8 +178,8 @@ export default function RightNowSnapshot() {
     };
 
     fetchRecommendations();
-    // Refresh every 5 minutes
-    const interval = setInterval(fetchRecommendations, 5 * 60 * 1000);
+    // Refresh every 15 minutes (less aggressive)
+    const interval = setInterval(fetchRecommendations, 15 * 60 * 1000);
     return () => clearInterval(interval);
   }, []);
 

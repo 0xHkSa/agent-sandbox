@@ -1,5 +1,31 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import axios from "axios";
+import { selectBestTemplate, applyTemplate, type TemplateContext } from "./response-templates";
+
+// Response cache for performance optimization
+interface CacheEntry {
+  response: string;
+  timestamp: number;
+  ttl: number; // Time to live in milliseconds
+}
+
+const responseCache = new Map<string, CacheEntry>();
+
+// Cache statistics for monitoring
+let cacheStats = {
+  hits: 0,
+  misses: 0,
+  total: 0
+};
+
+// Cache TTL settings (in milliseconds)
+const CACHE_TTL = {
+  WEATHER: 5 * 60 * 1000,      // 5 minutes
+  SURF: 10 * 60 * 1000,        // 10 minutes
+  BEACH_SCORE: 15 * 60 * 1000, // 15 minutes
+  TIDE: 30 * 60 * 1000,        // 30 minutes
+  GENERAL: 5 * 60 * 1000       // 5 minutes for general questions
+};
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
@@ -50,6 +76,108 @@ const TOOLS = [
 
 const MCP_SERVER_URL = "http://localhost:4100/mcp";
 
+// Cache utility functions
+function generateCacheKey(question: string, toolResults: any[]): string {
+  const q = question.toLowerCase().trim();
+  
+  // Extract location and question type for cache key
+  let location = 'general';
+  let questionType = 'general';
+  
+  // Extract location (more comprehensive)
+  if (q.includes('waikiki')) location = 'waikiki';
+  else if (q.includes('north shore') || q.includes('northshore')) location = 'northshore';
+  else if (q.includes('kailua')) location = 'kailua';
+  else if (q.includes('honolulu')) location = 'honolulu';
+  else if (q.includes('lanikai')) location = 'lanikai';
+  else if (q.includes('hanauma')) location = 'hanauma';
+  else if (q.includes('ala moana')) location = 'alamoana';
+  
+  // If no location in question, try to infer from tool results
+  if (location === 'general' && toolResults.length > 0) {
+    const weatherResult = toolResults.find(r => r.tool === 'getWeather');
+    if (weatherResult?.result?.location) {
+      location = weatherResult.result.location.toLowerCase().replace(/\s+/g, '');
+    }
+  }
+  
+  // Extract question type (more comprehensive)
+  if (q.includes('weather') || q.includes('temperature') || q.includes('temp')) {
+    questionType = 'weather';
+  } else if (q.includes('surf') || q.includes('wave') || q.includes('good to surf') || q.includes('surfing')) {
+    questionType = 'surf';
+  } else if (q.includes('score') || q.includes('rating')) {
+    questionType = 'beachscore';
+  } else if (q.includes('tide')) {
+    questionType = 'tide';
+  }
+  
+  // Create time-based key (round to nearest 5 minutes for weather, 10 for surf)
+  const now = new Date();
+  const timeKey = questionType === 'weather' ? 
+    Math.floor(now.getTime() / (5 * 60 * 1000)) : // 5-minute buckets
+    Math.floor(now.getTime() / (10 * 60 * 1000));  // 10-minute buckets
+  
+  const key = `${questionType}:${location}:${timeKey}`;
+  console.log(`🔑 Cache key details: question="${q}", location="${location}", type="${questionType}", timeKey="${timeKey}"`);
+  return key;
+}
+
+function getCacheEntry(key: string): string | null {
+  const entry = responseCache.get(key);
+  if (!entry) {
+    cacheStats.misses++;
+    cacheStats.total++;
+    return null;
+  }
+  
+  const now = Date.now();
+  if (now - entry.timestamp > entry.ttl) {
+    responseCache.delete(key);
+    cacheStats.misses++;
+    cacheStats.total++;
+    return null;
+  }
+  
+  cacheStats.hits++;
+  cacheStats.total++;
+  console.log(`📊 Cache stats: ${cacheStats.hits}/${cacheStats.total} hits (${Math.round(cacheStats.hits/cacheStats.total*100)}%)`);
+  return entry.response;
+}
+
+function setCacheEntry(key: string, response: string, questionType: string): void {
+  const ttl = CACHE_TTL[questionType.toUpperCase() as keyof typeof CACHE_TTL] || CACHE_TTL.GENERAL;
+  responseCache.set(key, {
+    response,
+    timestamp: Date.now(),
+    ttl
+  });
+  
+  // Log cache hit for monitoring
+  console.log(`💾 Cached response for key: ${key}`);
+  
+  // Cleanup old entries periodically (keep cache size manageable)
+  if (responseCache.size > 100) {
+    cleanupCache();
+  }
+}
+
+function cleanupCache(): void {
+  const now = Date.now();
+  let cleaned = 0;
+  
+  for (const [key, entry] of responseCache.entries()) {
+    if (now - entry.timestamp > entry.ttl) {
+      responseCache.delete(key);
+      cleaned++;
+    }
+  }
+  
+  if (cleaned > 0) {
+    console.log(`🧹 Cleaned ${cleaned} expired cache entries`);
+  }
+}
+
 // Call an MCP tool
 async function callMCPTool(toolName: string, args: any): Promise<any> {
   try {
@@ -80,7 +208,34 @@ async function callMCPTool(toolName: string, args: any): Promise<any> {
 }
 
 // System prompt that teaches AI how to use tools
-const SYSTEM_PROMPT = `You are a Hawaii outdoor activity advisor AI assistant. Your job is to help people decide what outdoor activities to do in Hawaii based on current conditions.
+const SYSTEM_PROMPT = `You are a knowledgeable, friendly Hawaii beach and surf guide. You help visitors plan their perfect day in paradise.
+
+**PERSONALITY:**
+- Be conversational and enthusiastic about Hawaii
+- Use local knowledge and insider tips
+- Be helpful but concise (2-3 sentences max)
+- Sound like a local friend giving advice
+- Use emojis sparingly but effectively
+
+**EXPERTISE:**
+- Weather patterns and microclimates across Hawaii
+- Surf conditions, wave quality, and safety
+- Beach characteristics and best activities
+- Local timing (tides, crowds, conditions)
+- Safety considerations for all activities
+
+**RESPONSE STYLE:**
+- Start naturally (no "Yes," "No," or formal greetings)
+- Be specific with recommendations
+- Mention timing when relevant
+- Include safety tips when needed
+- End with helpful next steps or alternatives
+
+**CONTEXT AWARENESS:**
+- Remember previous questions in the conversation
+- Build on previous recommendations
+- Reference earlier locations or activities
+- Provide follow-up suggestions
 
 **YOUR AVAILABLE TOOLS:**
 ${TOOLS.map(t => `- ${t.name}: ${t.description}\n  Parameters: ${JSON.stringify(t.parameters)}`).join('\n')}
@@ -109,34 +264,148 @@ You think: "I need to check Waikiki conditions"
 
 Now help the user!`;
 
+// Question intent classification - cleaner than keyword lists
+function classifyQuestionIntent(question: string): 'simple' | 'complex' | 'forecast' {
+  const q = question.toLowerCase().trim();
+  
+  // Forecast: time-based questions (next, tomorrow, hours, all day, etc.)
+  if (q.match(/(next|tomorrow|today|hour|hours|morning|afternoon|evening|all day|tonight|week|weekend)/)) {
+    return 'forecast';
+  }
+  
+  // Complex: recommendations, comparisons, advice, "should I" questions
+  if (q.match(/(should|recommend|best|compare|advice|when|where|which|good|bad)/)) {
+    return 'complex';
+  }
+  
+  // Simple: current conditions only (what's, how's, current weather/surf)
+  if (q.match(/^(what's|how's|what is|how is|current).*(weather|surf|waves|temperature|temp)/)) {
+    return 'simple';
+  }
+  
+  return 'simple'; // Default to simple for safety
+}
+
+// Extract template context from tool results
+function extractTemplateContext(toolResults: any[], question: string): TemplateContext {
+  const context: TemplateContext = {
+    location: 'the area',
+    temperature: 75,
+    windSpeed: 10,
+    precipitation: 0,
+    conditions: 'clear sky',
+    timeOfDay: getCurrentTimeOfDay(),
+    activityType: detectActivityType(question)
+  };
+
+  // Extract weather data
+  const weatherResult = toolResults.find(r => r.tool === 'getWeather');
+  if (weatherResult?.result) {
+    const weather = weatherResult.result;
+    context.location = weather.location || context.location;
+    context.temperature = weather.current_converted?.temperature_fahrenheit || weather.current?.temperature_2m || context.temperature;
+    context.windSpeed = weather.current_converted?.wind_speed_mph || weather.current?.wind_speed_10m || context.windSpeed;
+    context.precipitation = weather.current?.precipitation || context.precipitation;
+    context.conditions = getWeatherDescription(weather.current?.weather_code) || context.conditions;
+    context.hourlyForecast = weather.hourly_forecast;
+  }
+
+  // Extract surf data
+  const surfResult = toolResults.find(r => r.tool === 'getSurf');
+  if (surfResult?.result) {
+    const surf = surfResult.result;
+    context.waveHeight = surf.hourly_converted?.wave_height_feet?.[0] || (surf.hourly?.wave_height?.[0] ? surf.hourly.wave_height[0] * 3.28084 : undefined);
+    context.wavePeriod = surf.hourly?.wave_period?.[0];
+  }
+
+  // Extract UV data
+  const uvResult = toolResults.find(r => r.tool === 'getUV');
+  if (uvResult?.result) {
+    context.uvIndex = uvResult.result.uv_index;
+  }
+
+  // Extract tide data
+  const tideResult = toolResults.find(r => r.tool === 'getTides');
+  if (tideResult?.result) {
+    context.tideLevel = tideResult.result.current_tide_level;
+  }
+
+  // Extract beach score
+  const scoreResult = toolResults.find(r => r.tool === 'getBeachScore');
+  if (scoreResult?.result) {
+    context.beachScore = scoreResult.result.overall;
+  }
+
+  return context;
+}
+
+// Helper functions for template context
+function getCurrentTimeOfDay(): 'morning' | 'afternoon' | 'evening' | 'night' {
+  const hour = new Date().getHours();
+  if (hour < 6) return 'night';
+  if (hour < 12) return 'morning';
+  if (hour < 18) return 'afternoon';
+  if (hour < 22) return 'evening';
+  return 'night';
+}
+
+function detectActivityType(question: string): 'surfing' | 'family' | 'snorkeling' | 'general' {
+  const q = question.toLowerCase();
+  if (q.includes('surf') || q.includes('wave')) return 'surfing';
+  if (q.includes('family') || q.includes('kids') || q.includes('children')) return 'family';
+  if (q.includes('snorkel') || q.includes('dive')) return 'snorkeling';
+  return 'general';
+}
+
+function getWeatherDescription(weatherCode?: number): string {
+  if (!weatherCode) return 'clear sky';
+  
+  if (weatherCode === 0) return 'clear sky';
+  if (weatherCode <= 3) return 'partly cloudy';
+  if (weatherCode <= 48) return 'foggy';
+  if (weatherCode <= 67) return 'rainy';
+  if (weatherCode <= 77) return 'snowy';
+  if (weatherCode <= 82) return 'rain showers';
+  if (weatherCode <= 86) return 'snow showers';
+  return 'thunderstorm';
+}
+
 // Fast router - replaces Gemini planning for common questions
 function fastRouteQuestion(question: string): any[] | null {
+  const intent = classifyQuestionIntent(question);
+  
+  // Only use fast routing for simple current conditions
+  if (intent !== 'simple') {
+    console.log(`🚫 Skipping fast routing - ${intent} question detected: "${question}"`);
+    return null;
+  }
+  
   const q = question.toLowerCase();
   
-  // Weather questions
-  if (q.includes('weather') && q.includes('waikiki')) {
+  // Weather questions (only simple current conditions)
+  if (q.includes('weather') && q.includes('waikiki') && !q.includes('next') && !q.includes('tomorrow')) {
     return [
       { tool: 'resolveSpot', args: { spot: 'Waikiki' } },
       { tool: 'getWeather', args: { lat: 21.2766, lon: -157.8269 } }
     ];
   }
   
-  if (q.includes('weather') && q.includes('north shore')) {
+  if (q.includes('weather') && q.includes('north shore') && !q.includes('next') && !q.includes('tomorrow')) {
     return [
       { tool: 'resolveSpot', args: { spot: 'North Shore' } },
       { tool: 'getWeather', args: { lat: 21.6649, lon: -158.0532 } }
     ];
   }
   
-  if (q.includes('weather') && q.includes('kailua')) {
+  if (q.includes('weather') && q.includes('kailua') && !q.includes('next') && !q.includes('tomorrow')) {
     return [
       { tool: 'resolveSpot', args: { spot: 'Kailua Beach' } },
       { tool: 'getWeather', args: { lat: 21.4010, lon: -157.7394 } }
     ];
   }
   
-  // Temperature questions
-  if (q.includes('temperature') || q.includes('temp')) {
+  // Temperature questions (only simple current conditions)
+  if ((q.includes('temperature') || q.includes('temp')) && !q.includes('next') && !q.includes('tomorrow')) {
     if (q.includes('waikiki')) {
       return [
         { tool: 'resolveSpot', args: { spot: 'Waikiki' } },
@@ -151,8 +420,8 @@ function fastRouteQuestion(question: string): any[] | null {
     }
   }
   
-  // Surf questions
-  if (q.includes('surf') && q.includes('waikiki')) {
+  // Surf questions (only simple current conditions)
+  if (q.includes('surf') && q.includes('waikiki') && !q.includes('next') && !q.includes('tomorrow')) {
     return [
       { tool: 'resolveSpot', args: { spot: 'Waikiki' } },
       { tool: 'getWeather', args: { lat: 21.2766, lon: -157.8269 } },
@@ -161,7 +430,7 @@ function fastRouteQuestion(question: string): any[] | null {
     ];
   }
   
-  if (q.includes('surf') && q.includes('north shore')) {
+  if (q.includes('surf') && q.includes('north shore') && !q.includes('next') && !q.includes('tomorrow')) {
     return [
       { tool: 'resolveSpot', args: { spot: 'North Shore' } },
       { tool: 'getWeather', args: { lat: 21.6649, lon: -158.0532 } },
@@ -170,8 +439,8 @@ function fastRouteQuestion(question: string): any[] | null {
     ];
   }
   
-  // Wave questions
-  if (q.includes('wave') && q.includes('waikiki')) {
+  // Wave questions (only simple current conditions)
+  if (q.includes('wave') && q.includes('waikiki') && !q.includes('next') && !q.includes('tomorrow')) {
     return [
       { tool: 'resolveSpot', args: { spot: 'Waikiki' } },
       { tool: 'getSurf', args: { lat: 21.2766, lon: -157.8269 } },
@@ -179,7 +448,7 @@ function fastRouteQuestion(question: string): any[] | null {
     ];
   }
   
-  if (q.includes('wave') && q.includes('north shore')) {
+  if (q.includes('wave') && q.includes('north shore') && !q.includes('next') && !q.includes('tomorrow')) {
     return [
       { tool: 'resolveSpot', args: { spot: 'North Shore' } },
       { tool: 'getSurf', args: { lat: 21.6649, lon: -158.0532 } },
@@ -236,6 +505,14 @@ function fastRouteQuestion(question: string): any[] | null {
 
 // Fast response synthesizer - replaces Gemini synthesis for simple questions
 function fastSynthesizeResponse(toolResults: any[], question: string): string | null {
+  const intent = classifyQuestionIntent(question);
+  
+  // Only use fast synthesis for simple current conditions
+  if (intent !== 'simple') {
+    console.log(`🚫 Skipping fast synthesis - ${intent} question detected: "${question}"`);
+    return null; // Let Gemini handle complex synthesis
+  }
+  
   const q = question.toLowerCase();
   
   // Check if question asks about future/hourly conditions
@@ -252,23 +529,11 @@ function fastSynthesizeResponse(toolResults: any[], question: string): string | 
     if (weather) {
       // If asking about future AND we have hourly forecast data, use it
       if (askingAboutFuture && weather.hourly_forecast && weather.hourly_forecast.length > 0) {
-        const summary = weather.forecast_summary;
         const location = weather.location || 'the area';
         
         let response = `Weather forecast for ${location} (next ${weather.hourly_forecast.length} hours):\n`;
-        response += `High: ${summary.high_f}°F, Low: ${summary.low_f}°F, Avg wind: ${summary.avg_wind_mph.toFixed(1)}mph.\n`;
         
-        if (summary.rain_expected) {
-          response += `Rain expected. `;
-        } else {
-          response += `No rain expected. `;
-        }
-        
-        if (summary.best_hours && summary.best_hours.length > 0) {
-          response += `Best times: ${summary.best_hours.join(', ')}.`;
-        }
-        
-        response += `\n\nHourly breakdown:\n`;
+        // Add hourly breakdown
         weather.hourly_forecast.forEach((hour: any) => {
           const emoji = hour.is_good_weather ? '☀️' : '⛅';
           response += `${emoji} ${hour.time}: ${hour.temperature_f}°F, ${hour.wind_mph}mph wind, ${hour.conditions}\n`;
@@ -299,19 +564,11 @@ function fastSynthesizeResponse(toolResults: any[], question: string): string | 
     if (surf) {
       // If asking about future AND we have hourly forecast data, use it
       if (askingAboutFuture && surf.hourly_forecast && surf.hourly_forecast.length > 0) {
-        const summary = surf.surf_summary;
         const location = 'the spot';
         
         let response = `Surf forecast for ${location} (next ${surf.hourly_forecast.length} hours):\n`;
-        response += `Waves: ${summary.min_wave_height_ft.toFixed(1)}-${summary.max_wave_height_ft.toFixed(1)}ft (avg ${summary.avg_wave_height_ft.toFixed(1)}ft), `;
-        response += `${summary.avg_wave_period_s.toFixed(1)}s period from ${summary.dominant_direction}.\n`;
-        response += `Trend: ${summary.trend}. `;
         
-        if (summary.best_hours && summary.best_hours.length > 0) {
-          response += `Best times: ${summary.best_hours.join(', ')}.`;
-        }
-        
-        response += `\n\nHourly breakdown:\n`;
+        // Add hourly breakdown
         surf.hourly_forecast.forEach((hour: any) => {
           const emoji = hour.good_for_surfing ? '🏄' : '🌊';
           response += `${emoji} ${hour.time}: ${hour.wave_height_ft.toFixed(1)}ft, ${hour.wave_period_s}s, ${hour.wave_direction} - ${hour.quality_description} (${hour.quality}/5)\n`;
@@ -376,12 +633,15 @@ function fastSynthesizeResponse(toolResults: any[], question: string): string | 
       const timeMatches = q.match(/(\d{1,2})(am|pm)/gi);
       if (timeMatches && timeMatches.length >= 2) {
         const times = timeMatches.map(match => {
-          const [, hour, period] = match.match(/(\d{1,2})(am|pm)/i) || [];
+          const matchResult = match.match(/(\d{1,2})(am|pm)/i);
+          if (!matchResult || !matchResult[1] || !matchResult[2]) return null;
+          const hour = matchResult[1];
+          const period = matchResult[2];
           let hour24 = parseInt(hour);
           if (period.toLowerCase() === 'pm' && hour24 !== 12) hour24 += 12;
           if (period.toLowerCase() === 'am' && hour24 === 12) hour24 = 0;
           return { original: match, hour24, hour: parseInt(hour), period: period.toLowerCase() };
-        });
+        }).filter((t): t is NonNullable<typeof t> => t !== null);
         
         let response = `Surf comparison for ${times.map(t => t.original).join(' vs ')}:\n\n`;
         
@@ -435,13 +695,37 @@ function getWindDirection(degrees: number): string {
 }
 
 // Main agent function
-export async function askAgent(question: string): Promise<string> {
+export async function askAgent(question: string, conversation: any[] = []): Promise<string> {
   try {
     console.log("\n🤔 User question:", question);
-    console.log("🔑 API Key loaded:", process.env.GEMINI_API_KEY ? "YES" : "NO");
+  
+    
+    // Log conversation context
+    if (conversation && conversation.length > 0) {
+      console.log("💬 Conversation context:", conversation.length, "messages");
+      conversation.forEach((msg, i) => {
+        console.log(`  ${i + 1}. ${msg.isUser ? 'User' : 'AI'}: ${msg.text.substring(0, 50)}...`);
+      });
+    }
+    
+    // Check cache first (before any processing)
+    const cacheKey = generateCacheKey(question, []);
+    console.log(`🔑 Generated cache key: ${cacheKey}`);
+    const cachedResponse = getCacheEntry(cacheKey);
+    if (cachedResponse) {
+      console.log("⚡ Cache HIT! Returning cached response");
+      return cachedResponse;
+    }
+    console.log("💾 Cache MISS - processing new request");
     
     // Phase 1: Try fast routing first, fallback to Gemini for complex questions
     let toolCalls: any[] = [];
+    
+    // Build conversation context for both fast route and Gemini
+    const conversationContext = conversation.length > 0 ? 
+      `\n**CONVERSATION HISTORY:**\n${conversation.map(msg => 
+        `${msg.isUser ? 'User' : 'AI'}: ${msg.text}`
+      ).join('\n')}\n\n**CONTEXT NOTES:**\n- Remember previous locations mentioned\n- Build on earlier recommendations\n- Reference previous conditions or activities\n- Provide follow-up suggestions\n` : '';
     
     const fastRouteResult = fastRouteQuestion(question);
     if (fastRouteResult) {
@@ -449,12 +733,13 @@ export async function askAgent(question: string): Promise<string> {
       toolCalls = fastRouteResult;
     } else {
       console.log("🧠 Using Gemini for complex question...");
-      // Phase 1: Let AI decide what tools to call
-      const planningPrompt = `${SYSTEM_PROMPT}
+          // Phase 1: Let AI decide what tools to call
+          
+          const planningPrompt = `${SYSTEM_PROMPT}${conversationContext}
 
 **USER QUESTION:** "${question}"
 
-**YOUR TASK:** Analyze the question and call ONLY the tools needed to answer it.
+**YOUR TASK:** Analyze the question and call ONLY the tools needed to answer it. Be conversational and helpful!
 
 **Available tools:**
 1. **resolveSpot** - Convert location name to coordinates (ALWAYS call first if location mentioned)
@@ -477,6 +762,17 @@ export async function askAgent(question: string): Promise<string> {
 - "Best beach to go to?" → recommendBeaches + getBeachScore for top spots
 - "Score this beach" → resolveSpot + getBeachScore
 - "How good is [beach] today?" → resolveSpot + getBeachScore
+
+**IMPORTANT - Time-based questions:**
+- "weather for next 8 hours" → resolveSpot + getWeather (provides hourly forecast)
+- "surf conditions tomorrow" → resolveSpot + getSurf (provides daily forecast)
+- "what about tomorrow" → resolveSpot + getWeather + getSurf (comprehensive forecast)
+- "forecast for [location]" → resolveSpot + getWeather + getSurf + getTides
+
+**CRITICAL - Follow-up questions:**
+- If user asks "what about for the next 8 hours" after asking about a location, use the SAME location
+- If user asks "what about tomorrow" after asking about weather, get weather + surf for that location
+- Always check conversation context to determine which location they're referring to
 
 **Known coordinates (use when mentioned):**
 - Waikiki: lat=21.2766, lon=-157.8269
@@ -516,11 +812,15 @@ Your JSON array:`;
       }
     }
     
-    // Phase 2: Execute tool calls
+    // Phase 2: Execute tool calls in parallel for better performance
     const toolResults: any[] = [];
     let resolvedCoords: { lat: number; lon: number } | null = null;
     
-    for (const call of toolCalls) {
+    if (toolCalls.length === 0) {
+      console.log("⚠️ No tool calls to execute");
+    } else if (toolCalls.length === 1) {
+      // Single tool call - execute normally
+      const call = toolCalls[0];
       console.log(`🔧 Calling tool: ${call.tool} with args:`, call.args);
       try {
         const result = await callMCPTool(call.tool, call.args);
@@ -542,6 +842,47 @@ Your JSON array:`;
           error: error.message
         });
       }
+    } else {
+      // Multiple tool calls - execute in parallel
+      console.log(`🚀 Executing ${toolCalls.length} tools in parallel...`);
+      
+      const toolPromises = toolCalls.map(async (call) => {
+        console.log(`🔧 Calling tool: ${call.tool} with args:`, call.args);
+        try {
+          const result = await callMCPTool(call.tool, call.args);
+          console.log(`✅ ${call.tool} result:`, JSON.stringify(result).substring(0, 200));
+          return {
+            tool: call.tool,
+            args: call.args,
+            result: result,
+            success: true
+          };
+        } catch (error: any) {
+          console.error(`❌ ${call.tool} failed:`, error.message);
+          return {
+            tool: call.tool,
+            args: call.args,
+            error: error.message,
+            success: false
+          };
+        }
+      });
+      
+      // Wait for all tools to complete
+      const results = await Promise.all(toolPromises);
+      
+      // Process results and capture coordinates
+      for (const result of results) {
+        toolResults.push(result);
+        
+        // If this was resolveSpot, capture coordinates for auto-enhancement
+        if (result.tool === "resolveSpot" && result.result && result.result.lat && result.result.lon) {
+          resolvedCoords = { lat: result.result.lat, lon: result.result.lon };
+        }
+      }
+      
+      const successCount = results.filter(r => r.success).length;
+      console.log(`🎯 Parallel execution complete: ${successCount}/${toolCalls.length} tools succeeded`);
     }
     
     // Smart enhancement: Add missing tools based on question intent
@@ -621,20 +962,41 @@ Your JSON array:`;
       answer = fastResponse;
     } else {
       console.log("🧠 Using Gemini for complex synthesis...");
-      // Generate final answer based on tool results
-      const answerPrompt = `${SYSTEM_PROMPT}
+          // Generate final answer based on tool results
+          const answerPrompt = `${SYSTEM_PROMPT}${conversationContext}
 
 **USER QUESTION:** "${question}"
 
 **TOOL RESULTS:**
-${toolResults.map(r => `${r.tool}: ${JSON.stringify(r.result || r.error, null, 2)}`).join('\n\n')}
+${toolResults.map(r => {
+  if (r.tool === 'getWeather' && r.result?.hourly_forecast) {
+    // Format weather data for better Gemini understanding
+    const weather = r.result;
+    let formatted = `Weather Data for ${weather.location || 'location'}:\n`;
+    formatted += `Current: ${weather.current_converted?.temperature_fahrenheit || weather.current?.temperature_2m}°F, ${weather.current_converted?.wind_speed_mph || weather.current?.wind_speed_10m}mph winds\n\n`;
+    formatted += `Hourly Forecast (next ${weather.hourly_forecast.length} hours):\n`;
+    weather.hourly_forecast.forEach((hour: any) => {
+      formatted += `${hour.time}: ${hour.temperature_f}°F, ${hour.wind_mph}mph wind, ${hour.conditions}\n`;
+    });
+    return formatted;
+  }
+  return `${r.tool}: ${JSON.stringify(r.result || r.error, null, 2)}`;
+}).join('\n\n')}
 
 **CRITICAL: You MUST respond in 2-3 sentences MAX. Anything longer will be rejected.**
 
-**FORMAT (FOLLOW EXACTLY):**
-Sentence 1: Yes/No + key recommendation
-Sentence 2: Weather/wave data (temp in °F, wave height in feet, wind in mph, outdoor score)
-Sentence 3 (optional): One brief tip, caution, or access restriction (e.g., "Bellows requires military ID", "Hanauma Bay needs reservations")
+**CONVERSATIONAL STYLE (FOLLOW EXACTLY):**
+- Be natural and conversational, like talking to a friend
+- Start with the main point (no "Yes," "No," or formal greetings)
+- Use specific data from the tools
+- Include timing when relevant
+- End with helpful next steps or alternatives
+- Sound enthusiastic about Hawaii!
+
+**FORMAT EXAMPLES:**
+Sentence 1: Natural recommendation with key data (temp in °F, wave height in feet, wind in mph)
+Sentence 2: Additional details or context
+Sentence 3 (optional): One brief tip, caution, or access restriction
 
 **CRITICAL TEMPERATURE RULE:**
 - ALWAYS use temperature_fahrenheit from current_converted (NOT temperature_2m from current)
@@ -642,17 +1004,21 @@ Sentence 3 (optional): One brief tip, caution, or access restriction (e.g., "Bel
 - ALWAYS use wave_height_feet from hourly_converted (NOT wave_height from hourly)
 
 **EXAMPLES YOU MUST COPY:**
-✅ "Yes, great surf today! Waikiki has 3ft waves, 79°F, light 4mph wind, outdoor score 10/10. Perfect for beginners."
+✅ "Waikiki's looking great right now - 3ft waves, 79°F, light 4mph wind. Perfect for beginners."
 
-✅ "Not ideal. North Shore has rough 6ft waves, 9mph wind, score 6/10. Try Waikiki instead or wait for calmer conditions."
+✅ "North Shore's pretty rough today with 6ft waves and 9mph wind. Maybe try Waikiki instead or wait for calmer conditions."
 
-✅ "Decent conditions. 77°F, 2.6ft waves, 5mph wind, score 8/10."
+✅ "Decent conditions at 77°F, 2.6ft waves, 5mph wind. Should be good for most activities."
 
 **FORBIDDEN (DO NOT USE):**
+❌ "Yes, the weather is..."
+❌ "No, I don't recommend..."
 ❌ "Aloha! I'd be happy to..."
 ❌ "Looking to surf? Here's the scoop..."
 ❌ "The current weather is absolutely beautiful..."
 ❌ "Remember to stay hydrated..."
+❌ "Based on the data..."
+❌ "According to the forecast..."
 ❌ ANY paragraph longer than 3 sentences
 
 Your 2-3 sentence response:`;
@@ -668,7 +1034,32 @@ Your 2-3 sentence response:`;
       }
     }
     
+    // Try template system first for consistent responses
+    const templateContext = extractTemplateContext(toolResults, question);
+    const selectedTemplate = selectBestTemplate(question, templateContext);
+    
+    if (selectedTemplate) {
+      console.log(`🎯 Using template: ${selectedTemplate.id}`);
+      const templateResponse = applyTemplate(selectedTemplate, templateContext);
+      
+      // Use template response if it's good, otherwise fall back to Gemini
+      if (templateResponse && templateResponse.length > 20) {
+        answer = templateResponse;
+        console.log("🎨 Template response applied");
+      } else {
+        console.log("⚠️  Template response too short, using Gemini");
+      }
+    } else {
+      console.log("🔍 No matching template found, using Gemini response");
+    }
+    
     console.log("💬 Final Answer:", answer);
+    
+    // Cache the response for future requests
+    const finalCacheKey = generateCacheKey(question, toolResults);
+    const questionType = finalCacheKey.split(':')[0] || 'general';
+    console.log(`💾 Storing response in cache with key: ${finalCacheKey}`);
+    setCacheEntry(finalCacheKey, answer, questionType);
     
     return answer;
     
