@@ -24,11 +24,87 @@ const CACHE_TTL = {
   SURF: 10 * 60 * 1000,        // 10 minutes
   BEACH_SCORE: 15 * 60 * 1000, // 15 minutes
   TIDE: 30 * 60 * 1000,        // 30 minutes
+  RECOMMEND: 10 * 60 * 1000,
+  FAMILY: 10 * 60 * 1000,
   GENERAL: 5 * 60 * 1000       // 5 minutes for general questions
 };
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+const MODEL_TIMEOUT_MS = 12_000;
+const MCP_TOOL_TIMEOUT_MS = 8_000;
+
+type ConversationTurn = {
+  text: string;
+  isUser?: boolean;
+};
+
+interface ConversationState {
+  focusSpot?: SpotInfo;
+  lastAssistant?: string;
+  priorRecommendations: string[];
+}
+
+interface SpotInfo {
+  spot: string;
+  lat: number;
+  lon: number;
+  aliases: string[];
+  display?: string;
+}
+
+const KNOWN_SPOTS: SpotInfo[] = [
+  {
+    spot: "Waikiki",
+    display: "Waikiki",
+    lat: 21.2766,
+    lon: -157.8269,
+    aliases: ["waikiki", "waikiki beach"]
+  },
+  {
+    spot: "North Shore",
+    display: "the North Shore",
+    lat: 21.6649,
+    lon: -158.0532,
+    aliases: ["north shore", "northshore", "haleiwa"]
+  },
+  {
+    spot: "Honolulu",
+    display: "Honolulu",
+    lat: 21.3069,
+    lon: -157.8583,
+    aliases: ["honolulu", "town"]
+  },
+  {
+    spot: "Kailua Beach",
+    display: "Kailua",
+    lat: 21.401,
+    lon: -157.7394,
+    aliases: ["kailua", "kailua beach"]
+  },
+  {
+    spot: "Lanikai",
+    display: "Lanikai",
+    lat: 21.3927,
+    lon: -157.716,
+    aliases: ["lanikai"]
+  },
+  {
+    spot: "Hanauma Bay",
+    display: "Hanauma Bay",
+    lat: 21.2706,
+    lon: -157.6939,
+    aliases: ["hanauma", "hanauma bay"]
+  },
+  {
+    spot: "Ala Moana",
+    display: "Ala Moana",
+    lat: 21.2906,
+    lon: -157.8422,
+    aliases: ["ala moana", "ala moana beach", "magic island"]
+  }
+];
 
 // MCP tools available to the agent
 const TOOLS = [
@@ -77,6 +153,31 @@ const TOOLS = [
 const MCP_SERVER_URL = "http://localhost:4100/mcp";
 
 // Cache utility functions
+function normalizeLocationName(name?: string): string {
+  return (name || 'general').toLowerCase().replace(/\s+/g, '').replace(/[^a-z0-9]/g, '');
+}
+
+function hashQuestion(question: string): string {
+  let hash = 0;
+  for (let i = 0; i < question.length; i++) {
+    hash = (hash * 31 + question.charCodeAt(i)) >>> 0;
+  }
+  return hash.toString(36);
+}
+
+function isFutureQuestion(question: string): boolean {
+  const lower = question.toLowerCase();
+  return /(tomorrow|later|next|tonight|morning|afternoon|evening|hour|hrs|time|forecast|plan|schedule)/.test(lower);
+}
+
+function shouldUseCache(question: string): boolean {
+  const lower = question.toLowerCase();
+  if (isFutureQuestion(question)) return false;
+  if (/(kids|family|recommend|best|where|calmer|score|plan)/.test(lower)) return false;
+  const intent = classifyQuestionIntent(question);
+  return intent === "simple";
+}
+
 function generateCacheKey(question: string, toolResults: any[]): string {
   const q = question.toLowerCase().trim();
   
@@ -94,10 +195,27 @@ function generateCacheKey(question: string, toolResults: any[]): string {
   else if (q.includes('ala moana')) location = 'alamoana';
   
   // If no location in question, try to infer from tool results
-  if (location === 'general' && toolResults.length > 0) {
-    const weatherResult = toolResults.find(r => r.tool === 'getWeather');
-    if (weatherResult?.result?.location) {
-      location = weatherResult.result.location.toLowerCase().replace(/\s+/g, '');
+  if (toolResults.length > 0) {
+    if (location === 'general') {
+      const weatherResult = toolResults.find(r => r.tool === 'getWeather');
+      if (weatherResult?.result?.location) {
+        location = normalizeLocationName(weatherResult.result.location);
+      }
+    }
+    
+    if (location === 'general') {
+      const resolveResult = toolResults.find(r => r.tool === 'resolveSpot');
+      if (resolveResult?.result?.name) {
+        location = normalizeLocationName(resolveResult.result.name);
+      }
+    }
+    
+    if (location === 'general') {
+      const recommendResult = toolResults.find(r => r.tool === 'recommendBeaches');
+      const topRecommendation = Array.isArray(recommendResult?.result) ? recommendResult.result[0] : null;
+      if (topRecommendation?.name) {
+        location = normalizeLocationName(topRecommendation.name);
+      }
     }
   }
   
@@ -110,6 +228,10 @@ function generateCacheKey(question: string, toolResults: any[]): string {
     questionType = 'beachscore';
   } else if (q.includes('tide')) {
     questionType = 'tide';
+  } else if (q.includes('family') || q.includes('kids') || q.includes('children')) {
+    questionType = 'family';
+  } else if (q.includes('recommend') || q.includes('best beach')) {
+    questionType = 'recommend';
   }
   
   // Create time-based key (round to nearest 5 minutes for weather, 10 for surf)
@@ -118,7 +240,13 @@ function generateCacheKey(question: string, toolResults: any[]): string {
     Math.floor(now.getTime() / (5 * 60 * 1000)) : // 5-minute buckets
     Math.floor(now.getTime() / (10 * 60 * 1000));  // 10-minute buckets
   
-  const key = `${questionType}:${location}:${timeKey}`;
+  let key = `${questionType}:${location}:${timeKey}`;
+  
+  if (questionType === 'general' || questionType === 'recommend' || questionType === 'family' || location === 'general') {
+    const signature = hashQuestion(q.replace(/[^a-z0-9]/g, ''));
+    key = `${key}:${signature}`;
+  }
+  
   console.log(`🔑 Cache key details: question="${q}", location="${location}", type="${questionType}", timeKey="${timeKey}"`);
   return key;
 }
@@ -178,6 +306,436 @@ function cleanupCache(): void {
   }
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, timeoutMessage: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(timeoutMessage));
+    }, ms);
+    
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
+}
+
+async function safeGenerateContent(prompt: string, timeoutMessage: string): Promise<string | null> {
+  if (!process.env.GEMINI_API_KEY) {
+    console.warn("⚠️  Gemini API key missing; skipping model call");
+    return null;
+  }
+  
+  try {
+    const result = await withTimeout(model.generateContent(prompt), MODEL_TIMEOUT_MS, timeoutMessage);
+    const text = result?.response?.text?.() ?? "";
+    return text.trim() ? text : null;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown Gemini error";
+    console.error(`❌ Gemini generateContent failed: ${message}`);
+    return null;
+  }
+}
+
+function findSpotMatch(text: string): SpotInfo | null {
+  const lower = text.toLowerCase();
+  for (const spot of KNOWN_SPOTS) {
+    if (spot.aliases.some(alias => lower.includes(alias))) {
+      return spot;
+    }
+    if (lower.includes(spot.spot.toLowerCase())) {
+      return spot;
+    }
+  }
+  return null;
+}
+
+function detectSpotFromConversation(conversation: ConversationTurn[] = []): SpotInfo | null {
+  if (!conversation.length) return null;
+  let aiFallback: SpotInfo | null = null;
+  for (let i = conversation.length - 1; i >= 0; i--) {
+    const turn = conversation[i];
+    if (!turn?.text) continue;
+    const match = findSpotMatch(turn.text);
+    if (!match) continue;
+    if (turn.isUser !== false) {
+      return match;
+    }
+    if (!aiFallback) {
+      aiFallback = match;
+    }
+  }
+  return aiFallback;
+}
+
+function deriveConversationState(question: string, conversation: ConversationTurn[] = []): ConversationState {
+  const state: ConversationState = {
+    priorRecommendations: []
+  };
+  const questionSpot = findSpotMatch(question);
+  if (questionSpot) {
+    state.focusSpot = questionSpot;
+  }
+  for (let i = conversation.length - 1; i >= 0; i--) {
+    const turn = conversation[i];
+    if (!turn?.text) continue;
+    if (!state.lastAssistant && turn.isUser === false) {
+      state.lastAssistant = turn.text.trim();
+    }
+    const spot = findSpotMatch(turn.text);
+    if (!spot) continue;
+    if (!state.focusSpot && turn.isUser !== false) {
+      state.focusSpot = spot;
+    }
+    if (turn.isUser === false && !state.priorRecommendations.includes(spot.spot)) {
+      state.priorRecommendations.push(spot.spot);
+    }
+  }
+  return state;
+}
+
+function fallbackToolPlan(question: string, conversation: ConversationTurn[] = []): any[] {
+  const q = question.toLowerCase();
+  const plan: any[] = [];
+  const explicitSpot = findSpotMatch(q);
+  const contextualSpot = explicitSpot || detectSpotFromConversation(conversation);
+  const intentSignals = analyzeConversationIntent(question, conversation);
+  
+  const wantsRecommendation = /(best|recommend|where should).*(beach|spot)/.test(q);
+  const wantsScore = q.includes("score") || q.includes("rating");
+  const wantsSurf = q.includes("surf") || q.includes("wave") || q.includes("swell") || intentSignals.wantsSurf;
+  const wantsFamily = q.includes("family") || q.includes("kids") || q.includes("children") || intentSignals.wantsFamily;
+  const wantsSnorkel = q.includes("snorkel") || intentSignals.wantsSnorkel;
+  const wantsWeather = q.includes("weather") || q.includes("temperature") || q.includes("temp") || q.includes("rain");
+  const wantsTide = q.includes("tide");
+  const wantsUV = q.includes("uv");
+  const wantsOutdoorIndex = q.includes("should") || q.includes("conditions") || q.includes("overall");
+  
+  if (!contextualSpot) {
+    if (wantsRecommendation) {
+      const recommendArgs: any = {};
+      if (wantsFamily) recommendArgs.family = true;
+      if (wantsSurf) recommendArgs.surf = true;
+      if (wantsSnorkel) recommendArgs.snorkel = true;
+      plan.push({ tool: "recommendBeaches", args: recommendArgs });
+    }
+    return plan;
+  }
+  
+  plan.push({ tool: "resolveSpot", args: { spot: contextualSpot.spot } });
+  const coords = { lat: contextualSpot.lat, lon: contextualSpot.lon };
+  
+  const addTool = (tool: string, args: any) => {
+    if (!plan.some(item => item.tool === tool)) {
+      plan.push({ tool, args });
+    }
+  };
+  
+  if (wantsWeather) {
+    addTool("getWeather", coords);
+  }
+  
+  if (wantsSurf) {
+    addTool("getSurf", coords);
+    if (wantsTide || !plan.some(item => item.tool === "getTides")) {
+      addTool("getTides", coords);
+    }
+  } else if (wantsTide) {
+    addTool("getTides", coords);
+  }
+  
+  if (wantsUV) {
+    addTool("getUVIndex", coords);
+  }
+  
+  if (wantsOutdoorIndex) {
+    addTool("getOutdoorIndex", coords);
+  }
+  
+  if (wantsScore) {
+    addTool("getBeachScore", { lat: contextualSpot.lat, lon: contextualSpot.lon, beach: contextualSpot.spot });
+  }
+  
+  if (wantsRecommendation) {
+    const recommendArgs: any = {};
+    if (wantsFamily) recommendArgs.family = true;
+    if (wantsSurf) recommendArgs.surf = true;
+    if (wantsSnorkel) recommendArgs.snorkel = true;
+    addTool("recommendBeaches", recommendArgs);
+  }
+  
+  return plan;
+}
+
+function getDisplayLocation(raw?: string): string | null {
+  if (!raw || raw.toLowerCase() === "the area") return null;
+  const match = findSpotMatch(raw);
+  return match?.display || raw;
+}
+
+function describeSurfMood(waveHeight?: number, conditions?: string): string {
+  if (typeof waveHeight === "number") {
+    if (waveHeight >= 6) return "pumping";
+    if (waveHeight >= 3) return "pretty fun";
+    if (waveHeight >= 1) return "nice and mellow";
+    return "almost lake-flat";
+  }
+  
+  if (conditions) {
+    const lower = conditions.toLowerCase();
+    if (lower.includes("rain")) return "a bit rainy";
+    if (lower.includes("cloud")) return "a touch cloudy";
+    if (lower.includes("wind")) return "a little breezy";
+    if (lower.includes("sun")) return "sunny";
+  }
+  
+  return "looking good";
+}
+
+function normalizeSentence(text: string): string | null {
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (!cleaned) return null;
+  if (/[.!?]$/.test(cleaned)) return cleaned;
+  return `${cleaned}.`;
+}
+
+function normalizeForComparison(text: string | undefined): string {
+  if (!text) return "";
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function formatList(items: string[]): string {
+  if (items.length === 0) return "";
+  if (items.length === 1) return items[0] ?? "";
+  if (items.length === 2) {
+    const first = items[0] ?? "";
+    const second = items[1] ?? "";
+    return `${first} or ${second}`.trim();
+  }
+  const head = items.slice(0, -1).filter(Boolean);
+  const tail = items[items.length - 1] ?? "";
+  return `${head.join(", ")}, or ${tail}`.trim();
+}
+
+const COMFORT_VARIANTS = [
+  "Feels comfortable outside - I'd head out soon before the afternoon breeze picks up.",
+  "Looking mellow out there - grab your spot before the tradewinds wake up.",
+  "Super comfortable right now, so I'd roll out before the afternoon breeze shows up."
+];
+
+const BEACH_CHILL_VARIANTS = [
+  "Great time for a beach hang - pack reef-safe sunscreen and claim a shady spot early.",
+  "Perfect mellow window for the beach - grab a shady corner and settle in.",
+  "Easy beach weather for the crew - snag a spot and enjoy the calm before it warms up."
+];
+
+const FAMILY_SURF_VARIANTS = [
+  "The inside stays mellow so the keiki can splash while you slide out a little farther for those rolling sets.",
+  "Plenty of room for the kids in the lagoon while you snag a couple of cruisy peelers just beyond them.",
+  "Shallow water hugs the sand so the family hangs close as you paddle a few yards out for waist-high lines."
+];
+
+function deterministicPick(seed: string, variants: string[]): string {
+  if (!variants.length) return "";
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) {
+    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  }
+  const index = hash % variants.length;
+  return variants[index] ?? variants[0] ?? "";
+}
+
+function buildRecommendationSentence(question: string, context: TemplateContext, waveHeight?: number): string | null {
+  const activity = context.activityType;
+  const wind = typeof context.windSpeed === "number" ? context.windSpeed : undefined;
+  const precipitation = typeof context.precipitation === "number" ? context.precipitation : undefined;
+  const temperature = typeof context.temperature === "number" ? context.temperature : undefined;
+  const seed = `${context.location}:${question}`;
+  
+  if (context.wantsFamily && context.wantsSurf && !context.togetherPreference) {
+    return deterministicPick(seed, FAMILY_SURF_VARIANTS);
+  }
+  
+  if (activity === "surfing" && typeof waveHeight === "number") {
+    if (waveHeight >= 6) return "Only confident surfers should paddle out until the sets ease.";
+    if (waveHeight >= 3) return "Grab a shortboard and aim for the earlier tide before tradewinds rough it up.";
+    if (waveHeight >= 1) return "Perfect window for a mellow longboard cruise or soft-top session.";
+    return "Surf's tiny, so maybe switch it up with a snorkel or beach walk instead.";
+  }
+  
+  if (activity === "snorkeling" && typeof waveHeight === "number") {
+    if (waveHeight >= 3) return "Water's a bit rough for snorkeling, so look for a sheltered cove or wait for the tide to drop.";
+    return "Visibility should be solid for snorkeling, just hug the reef and watch the current.";
+  }
+  
+  if ((activity === "family" || activity === "general") && typeof waveHeight === "number") {
+    if (waveHeight >= 4) return "Waves are punchy, so stick close to shore or pick a calmer spot for the kiddos.";
+    if (waveHeight <= 2 && typeof wind === "number" && wind < 18) {
+      return deterministicPick(seed, BEACH_CHILL_VARIANTS);
+    }
+  }
+  
+  if (typeof precipitation === "number" && precipitation > 0.1) {
+    return "Expect a few windward showers rolling through, so stash a light jacket with your beach gear.";
+  }
+  
+  if (typeof temperature === "number" && typeof wind === "number" && wind < 15) {
+    return deterministicPick(seed, COMFORT_VARIANTS);
+  }
+  
+  return null;
+}
+
+function buildSafetyTip(context: TemplateContext, waveHeight?: number): string | null {
+  const uv = typeof context.uvIndex === "number" ? context.uvIndex : undefined;
+  const wind = typeof context.windSpeed === "number" ? context.windSpeed : undefined;
+  
+  if (uv && uv >= 8) {
+    return "UV index is blazing, so reapply reef-safe sunscreen and bring a rash guard.";
+  }
+  
+  if (waveHeight && waveHeight >= 6) {
+    return "Watch for strong rip currents and never paddle out alone.";
+  }
+  
+  if (wind && wind >= 20) {
+    return "Trades are howling, so expect chop and secure anything you leave on the sand.";
+  }
+  
+  return null;
+}
+
+function buildConversationalResponse(question: string, context: TemplateContext, toolResults: any[], state?: ConversationState): string | null {
+  if (isFutureQuestion(question)) {
+    return null;
+  }
+  const waveHeight = typeof context.waveHeight === "number" ? context.waveHeight : undefined;
+  let displayLocation = getDisplayLocation(context.location);
+  const temperature = typeof context.temperature === "number" ? Math.round(context.temperature) : undefined;
+  const windSpeed = typeof context.windSpeed === "number" ? Math.round(context.windSpeed) : undefined;
+  const recommendResult = toolResults.find(r => r.tool === "recommendBeaches");
+  const recommendedRaw = Array.isArray(recommendResult?.result) ? recommendResult.result : [];
+  let recommendations = recommendedRaw.filter((item: any) => item && item.name);
+  if (context.wantsFamily || context.togetherPreference) {
+    const familyList = recommendations.filter((item: any) => (item.type || '').toLowerCase().includes('family'));
+    if (familyList.length) {
+      recommendations = familyList;
+    }
+  }
+  if (context.wantsSnorkel) {
+    const snorkelList = recommendations.filter((item: any) => (item.type || '').toLowerCase().includes('snorkel'));
+    if (snorkelList.length) {
+      recommendations = snorkelList;
+    }
+  }
+  if (state?.priorRecommendations?.length) {
+    const unused = recommendations.filter((item: any) => !state.priorRecommendations.includes(item.name));
+    if (unused.length) {
+      recommendations = unused;
+    }
+  }
+  const primaryRecommendation = recommendations[0];
+  if (!displayLocation && primaryRecommendation) {
+    displayLocation = primaryRecommendation.name;
+  }
+  
+  const summaryParts: string[] = [];
+  if (typeof waveHeight === "number" && !Number.isNaN(waveHeight)) {
+    summaryParts.push(`${waveHeight.toFixed(1)}ft waves`);
+  }
+  if (typeof temperature === "number" && !Number.isNaN(temperature)) {
+    summaryParts.push(`${temperature}°F`);
+  }
+  if (typeof windSpeed === "number" && !Number.isNaN(windSpeed)) {
+    summaryParts.push(`${windSpeed}mph wind`);
+  }
+  
+  if (summaryParts.length === 0) {
+    const weatherResult = toolResults.find(r => r.tool === "getWeather")?.result;
+    if (!weatherResult?.current_converted) return null;
+    const temp = weatherResult.current_converted.temperature_fahrenheit;
+    const wind = weatherResult.current_converted.wind_speed_mph;
+    const cond = weatherResult.current?.conditions || context.conditions;
+    const fallbackSummary = [];
+    if (typeof temp === "number") fallbackSummary.push(`${Math.round(temp)}°F`);
+    if (typeof wind === "number") fallbackSummary.push(`${Math.round(wind)}mph wind`);
+    if (!fallbackSummary.length) return null;
+    summaryParts.push(...fallbackSummary);
+    if (cond) summaryParts.push(cond.toLowerCase());
+  }
+  
+  const mood = describeSurfMood(waveHeight, context.conditions);
+  const sentences: string[] = [];
+  let firstSentence: string | null = null;
+  
+  if (primaryRecommendation) {
+    const topName = displayLocation || primaryRecommendation.name || "This spot";
+    const descriptor = typeof primaryRecommendation.description === "string" ? primaryRecommendation.description.split(/[.!]/)[0] : "";
+    const summaryText = summaryParts.length ? summaryParts.join(", ") : descriptor;
+    const focusPhrase = context.togetherPreference ? "for the whole crew" : context.wantsFamily
+      ? "for a chill family beach day"
+      : context.wantsSurf
+        ? "for a quick surf check"
+        : "right now";
+    if (summaryText) {
+      firstSentence = `${topName}'s ${mood} ${focusPhrase} - ${summaryText}.`;
+    } else {
+      firstSentence = `${topName} should be ${mood} ${focusPhrase}.`;
+    }
+  } else {
+    const locationPhrase = displayLocation ? `${displayLocation}'s ${mood}` : `Conditions are ${mood}`;
+    let constructed = `${locationPhrase} right now`;
+    if (summaryParts.length) {
+      constructed += ` - ${summaryParts.join(", ")}.`;
+    } else {
+      constructed += ".";
+    }
+    firstSentence = constructed;
+  }
+  
+  const normalizedFirst = normalizeSentence(firstSentence);
+  if (normalizedFirst) {
+    sentences.push(normalizedFirst);
+  }
+  
+  const recommendation = buildRecommendationSentence(question, context, waveHeight);
+  const normalizedRecommendation = recommendation ? normalizeSentence(recommendation) : null;
+  if (normalizedRecommendation) {
+    sentences.push(normalizedRecommendation);
+  }
+  
+  if (recommendations.length > 1 && sentences.length < 3) {
+    const altNames = recommendations.slice(1, 3).map((item: any) => item.name).filter(Boolean);
+    if (altNames.length > 0) {
+      let altSentence: string | null = null;
+      if (context.wantsFamily && context.wantsSurf && !context.togetherPreference) {
+        altSentence = normalizeSentence(`If you want a backup with easy surf, ${formatList(altNames)} keep everyone smiling without much paddling.`);
+      } else {
+        altSentence = normalizeSentence(`If you want to mix it up, ${formatList(altNames)} stay nice and mellow too.`);
+      }
+      if (altSentence) {
+        sentences.push(altSentence);
+      }
+    }
+  }
+  
+  const safety = buildSafetyTip(context, waveHeight);
+  const normalizedSafety = safety ? normalizeSentence(safety) : null;
+  if (normalizedSafety && sentences.length < 3) {
+    sentences.push(normalizedSafety);
+  }
+  
+  if (!sentences.length) {
+    return null;
+  }
+  
+  return sentences.slice(0, 3).join(" ");
+}
+
 // Call an MCP tool
 async function callMCPTool(toolName: string, args: any): Promise<any> {
   try {
@@ -196,14 +754,24 @@ async function callMCPTool(toolName: string, args: any): Promise<any> {
         headers: {
           "Content-Type": "application/json",
           "Accept": "application/json, text/event-stream"
-        }
+        },
+        timeout: MCP_TOOL_TIMEOUT_MS
       }
     );
     
     return response.data.result?.structuredContent || response.data.result;
-  } catch (error: any) {
-    console.error(`Error calling tool ${toolName}:`, error.message);
-    throw new Error(`Failed to call ${toolName}: ${error.message}`);
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error)) {
+      if (error.code === "ECONNABORTED") {
+        console.error(`Timeout calling tool ${toolName} after ${MCP_TOOL_TIMEOUT_MS}ms`);
+        throw new Error(`Timed out calling ${toolName}`);
+      }
+      const message = error.response?.data?.error?.message || error.message || "Unknown MCP error";
+      console.error(`Error calling tool ${toolName}:`, message);
+      throw new Error(`Failed to call ${toolName}: ${message}`);
+    }
+    console.error(`Unexpected error calling tool ${toolName}:`, (error as Error).message);
+    throw error;
   }
 }
 
@@ -264,21 +832,17 @@ You think: "I need to check Waikiki conditions"
 
 Now help the user!`;
 
-// Question intent classification - cleaner than keyword lists
 function classifyQuestionIntent(question: string): 'simple' | 'complex' | 'forecast' {
   const q = question.toLowerCase().trim();
   
-  // Forecast: time-based questions (next, tomorrow, hours, all day, etc.)
   if (q.match(/(next|tomorrow|today|hour|hours|morning|afternoon|evening|all day|tonight|week|weekend)/)) {
     return 'forecast';
   }
   
-  // Complex: recommendations, comparisons, advice, "should I" questions
   if (q.match(/(should|recommend|best|compare|advice|when|where|which|good|bad)/)) {
     return 'complex';
   }
   
-  // Simple: current conditions only (what's, how's, current weather/surf)
   if (q.match(/^(what's|how's|what is|how is|current).*(weather|surf|waves|temperature|temp)/)) {
     return 'simple';
   }
@@ -287,7 +851,7 @@ function classifyQuestionIntent(question: string): 'simple' | 'complex' | 'forec
 }
 
 // Extract template context from tool results
-function extractTemplateContext(toolResults: any[], question: string): TemplateContext {
+function extractTemplateContext(toolResults: any[], question: string, conversation: ConversationTurn[] = []): TemplateContext {
   const context: TemplateContext = {
     location: 'the area',
     temperature: 75,
@@ -295,8 +859,13 @@ function extractTemplateContext(toolResults: any[], question: string): TemplateC
     precipitation: 0,
     conditions: 'clear sky',
     timeOfDay: getCurrentTimeOfDay(),
-    activityType: detectActivityType(question)
+    activityType: detectActivityType(question, conversation)
   };
+  const intents = analyzeConversationIntent(question, conversation);
+  context.wantsFamily = intents.wantsFamily;
+  context.wantsSurf = intents.wantsSurf;
+  context.wantsSnorkel = intents.wantsSnorkel;
+  context.togetherPreference = intents.togetherPreference;
 
   // Extract weather data
   const weatherResult = toolResults.find(r => r.tool === 'getWeather');
@@ -318,6 +887,13 @@ function extractTemplateContext(toolResults: any[], question: string): TemplateC
     context.wavePeriod = surf.hourly?.wave_period?.[0];
   }
 
+  if (context.location === 'the area') {
+    const resolveResult = toolResults.find(r => r.tool === 'resolveSpot');
+    if (resolveResult?.result?.name) {
+      context.location = resolveResult.result.name;
+    }
+  }
+
   // Extract UV data
   const uvResult = toolResults.find(r => r.tool === 'getUV');
   if (uvResult?.result) {
@@ -336,6 +912,18 @@ function extractTemplateContext(toolResults: any[], question: string): TemplateC
     context.beachScore = scoreResult.result.overall;
   }
 
+  const recommendResult = toolResults.find(r => r.tool === 'recommendBeaches');
+  if (Array.isArray(recommendResult?.result)) {
+    const recommendations = recommendResult.result.filter((item: any) => item && item.name);
+    if (recommendations.length > 0) {
+      context.primaryRecommendation = recommendations[0].name;
+      context.recommendedBeaches = recommendations.map((item: any) => item.name);
+      if (context.location === 'the area') {
+        context.location = recommendations[0].name || context.location;
+      }
+    }
+  }
+
   return context;
 }
 
@@ -349,11 +937,42 @@ function getCurrentTimeOfDay(): 'morning' | 'afternoon' | 'evening' | 'night' {
   return 'night';
 }
 
-function detectActivityType(question: string): 'surfing' | 'family' | 'snorkeling' | 'general' {
+function collectRecentUserTexts(conversation: ConversationTurn[], limit = 5): string[] {
+  return conversation
+    .filter(turn => turn?.text && turn.isUser !== false)
+    .slice(-limit)
+    .map(turn => turn.text.toLowerCase());
+}
+
+function analyzeConversationIntent(question: string, conversation: ConversationTurn[] = []): { wantsFamily: boolean; wantsSurf: boolean; wantsSnorkel: boolean; togetherPreference: boolean } {
+  const current = question.toLowerCase();
+  const history = collectRecentUserTexts(conversation, 8);
+  const togetherPreference = /whole family|all together|can't split|cant split|stay together|keep everyone/.test(current);
+  const wantsFamilyCurrent = /family|kids|keiki|children|toddler|stroller/.test(current) || togetherPreference;
+  const wantsSurfCurrent = /surf|wave|barrel|swell|longboard|shortboard/.test(current);
+  const wantsSnorkelCurrent = /snorkel|reef|dive|fish/.test(current);
+  const wantsFamilyHistory = history.some(text => /family|kids|keiki|children/.test(text));
+  const wantsSurfHistory = history.some(text => /surf|wave|barrel|swell/.test(text));
+  const wantsSnorkelHistory = history.some(text => /snorkel|reef|dive|fish/.test(text));
+  let wantsFamily = wantsFamilyCurrent || wantsFamilyHistory;
+  let wantsSurf = wantsSurfCurrent || (!wantsFamilyCurrent && !togetherPreference && wantsSurfHistory);
+  let wantsSnorkel = wantsSnorkelCurrent || wantsSnorkelHistory;
+  if (togetherPreference) {
+    wantsSurf = wantsSurfCurrent;
+  }
+  return { wantsFamily, wantsSurf, wantsSnorkel, togetherPreference };
+}
+
+function detectActivityType(question: string, conversation: ConversationTurn[] = []): 'surfing' | 'family' | 'snorkeling' | 'general' {
   const q = question.toLowerCase();
   if (q.includes('surf') || q.includes('wave')) return 'surfing';
-  if (q.includes('family') || q.includes('kids') || q.includes('children')) return 'family';
   if (q.includes('snorkel') || q.includes('dive')) return 'snorkeling';
+  if (q.includes('family') || q.includes('kids') || q.includes('children')) return 'family';
+  
+  const signals = analyzeConversationIntent(question, conversation);
+  if (signals.wantsSurf && !signals.wantsFamily && !signals.wantsSnorkel) return 'surfing';
+  if (signals.wantsSnorkel && !signals.wantsSurf) return 'snorkeling';
+  if (signals.wantsFamily) return 'family';
   return 'general';
 }
 
@@ -707,25 +1326,40 @@ export async function askAgent(question: string, conversation: any[] = []): Prom
         console.log(`  ${i + 1}. ${msg.isUser ? 'User' : 'AI'}: ${msg.text.substring(0, 50)}...`);
       });
     }
-    
+    const state = deriveConversationState(question, conversation as ConversationTurn[]);
+
     // Check cache first (before any processing)
-    const cacheKey = generateCacheKey(question, []);
-    console.log(`🔑 Generated cache key: ${cacheKey}`);
-    const cachedResponse = getCacheEntry(cacheKey);
-    if (cachedResponse) {
-      console.log("⚡ Cache HIT! Returning cached response");
-      return cachedResponse;
+    const useCache = shouldUseCache(question);
+    let initialCacheKey: string | null = null;
+    if (useCache) {
+      initialCacheKey = generateCacheKey(question, []);
+      console.log(`🔑 Generated cache key: ${initialCacheKey}`);
+      const cachedResponse = getCacheEntry(initialCacheKey);
+      if (cachedResponse) {
+        console.log("⚡ Cache HIT! Returning cached response");
+        return cachedResponse;
+      }
+      console.log("💾 Cache MISS - processing new request");
+    } else {
+      console.log("🚫 Skipping cache for this question");
     }
-    console.log("💾 Cache MISS - processing new request");
     
     // Phase 1: Try fast routing first, fallback to Gemini for complex questions
     let toolCalls: any[] = [];
     
     // Build conversation context for both fast route and Gemini
+    const sessionNotes: string[] = [];
+    const intentSignals = analyzeConversationIntent(question, conversation as ConversationTurn[]);
+    if (intentSignals.wantsFamily) sessionNotes.push('User wants family-friendly conditions.');
+    if (intentSignals.wantsSurf) sessionNotes.push('User also wants to surf.');
+    if (intentSignals.wantsSnorkel) sessionNotes.push('User is interested in snorkeling.');
+    if (intentSignals.togetherPreference) sessionNotes.push('Keep the whole family together at one spot.');
+    if (state.focusSpot) sessionNotes.push(`Recent focus: ${state.focusSpot.display || state.focusSpot.spot}.`);
+
     const conversationContext = conversation.length > 0 ? 
       `\n**CONVERSATION HISTORY:**\n${conversation.map(msg => 
         `${msg.isUser ? 'User' : 'AI'}: ${msg.text}`
-      ).join('\n')}\n\n**CONTEXT NOTES:**\n- Remember previous locations mentioned\n- Build on earlier recommendations\n- Reference previous conditions or activities\n- Provide follow-up suggestions\n` : '';
+      ).join('\n')}\n${sessionNotes.length ? `\n**SESSION NOTES:**\n- ${sessionNotes.join('\n- ')}\n` : ''}` : '';
     
     const fastRouteResult = fastRouteQuestion(question);
     if (fastRouteResult) {
@@ -797,18 +1431,20 @@ For "How are the waves at North Shore?":
 
 Your JSON array:`;
 
-      const planResult = await model.generateContent(planningPrompt);
-      const planText = planResult.response.text();
-      console.log("🧠 AI Plan:", planText);
-      
-      // Parse tool calls
-      try {
-        const jsonMatch = planText.match(/\[[\s\S]*\]/);
-        if (jsonMatch) {
-          toolCalls = JSON.parse(jsonMatch[0]);
+      const planText = await safeGenerateContent(planningPrompt, "Gemini planning timed out");
+      if (planText) {
+        console.log("🧠 AI Plan:", planText);
+        try {
+          const jsonMatch = planText.match(/\[[\s\S]*\]/);
+          if (jsonMatch) {
+            toolCalls = JSON.parse(jsonMatch[0]);
+          }
+        } catch (e) {
+          console.error("Failed to parse tool calls, trying without tools");
         }
-      } catch (e) {
-        console.error("Failed to parse tool calls, trying without tools");
+      } else {
+        console.warn("⚠️  Gemini planning unavailable, falling back to rule-based tool plan");
+        toolCalls = fallbackToolPlan(question, conversation as ConversationTurn[]);
       }
     }
     
@@ -888,6 +1524,22 @@ Your JSON array:`;
     // Smart enhancement: Add missing tools based on question intent
     if (resolvedCoords) {
       const questionLower = question.toLowerCase();
+      if (isFutureQuestion(question)) {
+        const hasExtendedWeather = toolResults.some(r => r.tool === "getWeather" && (r.args?.hours || r.args?.startOffsetHours || r.args?.timeDescriptor));
+        if (!hasExtendedWeather) {
+          const horizon = questionLower.includes('next 4') ? 4 : questionLower.includes('next 6') ? 6 : questionLower.includes('next 8') ? 8 : 12;
+          const startOffset = questionLower.includes('tomorrow') ? 24 : questionLower.includes('later') ? 6 : 0;
+          const forecastArgs = { lat: resolvedCoords.lat, lon: resolvedCoords.lon, hours: horizon, startOffsetHours: startOffset, timeDescriptor: question };
+          console.log("🔧 Fetching extended weather window...");
+          try {
+            const result = await callMCPTool("getWeather", forecastArgs);
+            toolResults.push({ tool: "getWeather", args: forecastArgs, result });
+            console.log(`✅ getWeather (extended) result:`, JSON.stringify(result).substring(0, 200));
+          } catch (error: any) {
+            console.error("❌ getWeather extended window failed:", error.message);
+          }
+        }
+      }
       
       // Add surf if question mentions waves/surf but getSurf wasn't called
       if ((questionLower.includes('wave') || questionLower.includes('surf')) && 
@@ -953,24 +1605,65 @@ Your JSON array:`;
       }
     }
     
-    // Phase 3: Try fast synthesis first, fallback to Gemini for complex responses
-    let answer: string;
+    const recommendationEntry = toolResults.find(r => r.tool === "recommendBeaches");
+    if (Array.isArray(recommendationEntry?.result) && recommendationEntry.result.length > 0) {
+      const primaryRecommendation = recommendationEntry.result[0];
+      if (primaryRecommendation?.lat && primaryRecommendation?.lon) {
+        const recCoords = { lat: primaryRecommendation.lat, lon: primaryRecommendation.lon };
+        const hasWeatherForRecommendation = toolResults.some(r => r.tool === "getWeather" && r.args && typeof r.args.lat === "number" && Math.abs(r.args.lat - recCoords.lat) < 0.01 && Math.abs(r.args.lon - recCoords.lon) < 0.01);
+        if (!hasWeatherForRecommendation) {
+          try {
+            console.log("🔧 Fetching weather for recommended beach...");
+            const result = await callMCPTool("getWeather", recCoords);
+            toolResults.push({ tool: "getWeather", args: recCoords, result });
+            console.log(`✅ getWeather (recommended) result:`, JSON.stringify(result).substring(0, 200));
+          } catch (error: any) {
+            console.error("❌ getWeather for recommendation failed:", error.message);
+          }
+        }
+        if (!resolvedCoords) {
+          resolvedCoords = recCoords;
+        }
+      }
+    }
     
-    const fastResponse = fastSynthesizeResponse(toolResults, question);
-    if (fastResponse) {
-      console.log("⚡ Using fast template for simple response...");
-      answer = fastResponse;
-    } else {
+    // Phase 3: Build conversational response with fallbacks
+    const templateContext = extractTemplateContext(toolResults, question, conversation as ConversationTurn[]);
+    let answer: string | null = buildConversationalResponse(question, templateContext, toolResults, state);
+    
+    const allowTemplates = !isFutureQuestion(question);
+    
+    if (answer) {
+      console.log("💬 Using heuristic conversational response");
+    } else if (allowTemplates) {
+      const selectedTemplate = !intentSignals.togetherPreference || !templateContext.recommendedBeaches ? selectBestTemplate(question, templateContext) : null;
+      if (selectedTemplate) {
+        console.log(`🎯 Using template: ${selectedTemplate.id}`);
+        const templateResponse = applyTemplate(selectedTemplate, templateContext);
+        if (templateResponse && templateResponse.length > 20) {
+          answer = templateResponse;
+          console.log("🎨 Template response applied");
+        }
+      }
+    }
+    
+    if (!answer && allowTemplates) {
+      const fastResponse = fastSynthesizeResponse(toolResults, question);
+      if (fastResponse) {
+        console.log("⚡ Using fast template for simple response...");
+        answer = fastResponse;
+      }
+    }
+    
+    if (!answer) {
       console.log("🧠 Using Gemini for complex synthesis...");
-          // Generate final answer based on tool results
-          const answerPrompt = `${SYSTEM_PROMPT}${conversationContext}
+      const answerPrompt = `${SYSTEM_PROMPT}${conversationContext}
 
 **USER QUESTION:** "${question}"
 
 **TOOL RESULTS:**
 ${toolResults.map(r => {
   if (r.tool === 'getWeather' && r.result?.hourly_forecast) {
-    // Format weather data for better Gemini understanding
     const weather = r.result;
     let formatted = `Weather Data for ${weather.location || 'location'}:\n`;
     formatted += `Current: ${weather.current_converted?.temperature_fahrenheit || weather.current?.temperature_2m}°F, ${weather.current_converted?.wind_speed_mph || weather.current?.wind_speed_10m}mph winds\n\n`;
@@ -1023,45 +1716,38 @@ Sentence 3 (optional): One brief tip, caution, or access restriction
 
 Your 2-3 sentence response:`;
 
-      const answerResult = await model.generateContent(answerPrompt);
-      answer = answerResult.response.text().trim();
-      
-      // Force brevity: Keep only first 3 sentences if too long
-      const sentences = answer.split(/(?<=[.!?])\s+/).filter(s => s.trim());
-      if (sentences.length > 4) {
-        console.log("⚠️  Response too long, keeping first 3 sentences...");
-        answer = sentences.slice(0, 3).join(' ');
+      const geminiAnswer = await safeGenerateContent(answerPrompt, "Gemini answer timed out");
+      if (geminiAnswer) {
+        const sentences = geminiAnswer.split(/(?<=[.!?])\s+/).filter(s => s.trim());
+        if (sentences.length > 3) {
+          console.log("⚠️  Gemini response too long, trimming to 3 sentences");
+        }
+        answer = sentences.slice(0, 3).join(' ').trim();
       }
     }
     
-    // Try template system first for consistent responses
-    const templateContext = extractTemplateContext(toolResults, question);
-    const selectedTemplate = selectBestTemplate(question, templateContext);
+    if (!answer) {
+      console.warn("⚠️  Falling back to default response");
+      answer = "Still double-checking the latest conditions - mind giving me another shot in a moment?";
+    }
     
-    if (selectedTemplate) {
-      console.log(`🎯 Using template: ${selectedTemplate.id}`);
-      const templateResponse = applyTemplate(selectedTemplate, templateContext);
-      
-      // Use template response if it's good, otherwise fall back to Gemini
-      if (templateResponse && templateResponse.length > 20) {
-        answer = templateResponse;
-        console.log("🎨 Template response applied");
-      } else {
-        console.log("⚠️  Template response too short, using Gemini");
-      }
+    let finalAnswer = answer || "Still double-checking the latest conditions - mind giving me another shot in a moment?";
+    if (state.lastAssistant && normalizeForComparison(finalAnswer) === normalizeForComparison(state.lastAssistant)) {
+      finalAnswer += " If you'd like a different beach or timing, just say the word and I'll spin up a new game plan.";
+    }
+    console.log("💬 Final Answer:", finalAnswer);
+    
+    // Cache the response for future requests (when appropriate)
+    if (useCache) {
+      const finalCacheKey = generateCacheKey(question, toolResults);
+      const questionType = finalCacheKey.split(':')[0] || 'general';
+      console.log(`💾 Storing response in cache with key: ${finalCacheKey}`);
+      setCacheEntry(finalCacheKey, finalAnswer, questionType);
     } else {
-      console.log("🔍 No matching template found, using Gemini response");
+      console.log("🚫 Skipping cache storage for this answer");
     }
     
-    console.log("💬 Final Answer:", answer);
-    
-    // Cache the response for future requests
-    const finalCacheKey = generateCacheKey(question, toolResults);
-    const questionType = finalCacheKey.split(':')[0] || 'general';
-    console.log(`💾 Storing response in cache with key: ${finalCacheKey}`);
-    setCacheEntry(finalCacheKey, answer, questionType);
-    
-    return answer;
+    return finalAnswer;
     
   } catch (error: any) {
     console.error("❌ Agent error:", error.message);
@@ -1102,4 +1788,3 @@ export function formatAsBullets(answer: string, toolResults: any[]): string {
   const recommendation = answer.split(/[.!?]/)[0] + '.';
   return `${recommendation}\n\n${bullets.join('\n')}`;
 }
-

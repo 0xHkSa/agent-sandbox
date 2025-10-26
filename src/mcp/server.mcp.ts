@@ -4,6 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { findSpot, recommendBeaches } from "../utils/spots.js";
 import { getWeather, getSurf, computeOutdoorIndex, getTides, getUVIndex, calculateBeachScore, analyzeMultipleSpots, getSunTimes } from "./tools";
+import type { WeatherOptions } from "./tools";
 
 const app = express();
 app.use(express.json());
@@ -41,10 +42,33 @@ server.registerTool(
   {
     title: "Get current weather conditions",
     description: "Get temperature, precipitation, and wind for given coordinates",
-    inputSchema: { lat: z.number(), lon: z.number() }
+    inputSchema: {
+      lat: z.number(),
+      lon: z.number(),
+      hours: z.number().min(1).max(48).optional(),
+      startOffsetHours: z.number().min(0).max(72).optional(),
+      timeDescriptor: z.string().optional()
+    }
   },
-  async ({ lat, lon }: { lat: number; lon: number }) => {
-    const data = await getWeather(lat, lon);
+  async (rawArgs: any) => {
+    const { lat, lon, hours, startOffsetHours, timeDescriptor } = rawArgs as {
+      lat: number;
+      lon: number;
+      hours?: number;
+      startOffsetHours?: number;
+      timeDescriptor?: string;
+    };
+    const weatherOptions: WeatherOptions = {};
+    if (typeof hours === "number") {
+      weatherOptions.hours = hours;
+    }
+    if (typeof startOffsetHours === "number") {
+      weatherOptions.startOffsetHours = startOffsetHours;
+    }
+    if (typeof timeDescriptor === "string") {
+      weatherOptions.timeDescriptor = timeDescriptor;
+    }
+    const data = await getWeather(lat, lon, weatherOptions);
     return {
       content: [{ type: "text", text: JSON.stringify(data.current) }],
       structuredContent: data

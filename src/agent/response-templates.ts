@@ -15,6 +15,12 @@ export interface TemplateContext {
   hourlyForecast?: any[];
   timeOfDay?: 'morning' | 'afternoon' | 'evening' | 'night';
   activityType?: 'surfing' | 'family' | 'snorkeling' | 'general';
+  recommendedBeaches?: string[];
+  primaryRecommendation?: string;
+  wantsFamily?: boolean;
+  wantsSurf?: boolean;
+  wantsSnorkel?: boolean;
+  togetherPreference?: boolean;
 }
 
 export interface ResponseTemplate {

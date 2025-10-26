@@ -453,7 +453,62 @@ function getUVRecommendation(uvIndex: number): string {
   return "Avoid outdoor activities during peak sun hours";
 }
 
-export async function getWeather(lat: number, lon: number) {
+export interface WeatherOptions {
+  hours?: number;
+  startOffsetHours?: number;
+  timeDescriptor?: string;
+}
+
+function parseTimeDescriptor(descriptor?: string): { startOffsetHours?: number; hours?: number } {
+  if (!descriptor) return {};
+  const lower = descriptor.toLowerCase();
+  let hours: number | undefined;
+  let startOffsetHours: number | undefined;
+
+  const matchHours = lower.match(/next\s+(\d+)\s*hour/);
+  if (matchHours) {
+    hours = Math.min(48, Math.max(1, parseInt(matchHours[1], 10)));
+  }
+
+  const matchDuration = lower.match(/(\d+)\s*hour/);
+  if (!hours && matchDuration) {
+    hours = Math.min(48, Math.max(1, parseInt(matchDuration[1], 10)));
+  }
+
+  if (lower.includes("tomorrow")) {
+    startOffsetHours = 24;
+  }
+  if (lower.includes("tonight")) {
+    startOffsetHours = 12;
+  }
+
+  if (lower.includes("morning")) {
+    const base = lower.includes("tomorrow") ? 24 : 0;
+    startOffsetHours = base + 6;
+    hours = hours ?? 6;
+  } else if (lower.includes("afternoon")) {
+    const base = lower.includes("tomorrow") ? 24 : 0;
+    startOffsetHours = base + 12;
+    hours = hours ?? 6;
+  } else if (lower.includes("evening")) {
+    const base = lower.includes("tomorrow") ? 24 : 0;
+    startOffsetHours = base + 17;
+    hours = hours ?? 5;
+  }
+
+  return { startOffsetHours, hours };
+}
+
+export async function getWeather(lat: number, lon: number, options: WeatherOptions = {}) {
+  const descriptorConfig = parseTimeDescriptor(options.timeDescriptor);
+  const hoursToShow = Math.min(
+    48,
+    Math.max(1, options.hours ?? descriptorConfig.hours ?? 12)
+  );
+  const startOffsetHours = Math.max(0, options.startOffsetHours ?? descriptorConfig.startOffsetHours ?? 0);
+  const forecastSpanHours = startOffsetHours + hoursToShow;
+  const forecastDays = Math.min(3, Math.max(1, Math.ceil((forecastSpanHours + 1) / 24)));
+
   const url = "https://api.open-meteo.com/v1/forecast";
   const params = {
     latitude: lat,
@@ -461,7 +516,7 @@ export async function getWeather(lat: number, lon: number) {
     current: ["temperature_2m","apparent_temperature","precipitation","wind_speed_10m"].join(","),
     hourly: ["temperature_2m","apparent_temperature","precipitation","wind_speed_10m","weather_code"].join(","),
     timezone: "Pacific/Honolulu",
-    forecast_days: 1 // Only get today's data
+    forecast_days: forecastDays
   };
   const { data } = await axios.get(url, { params, timeout: 8000 });
   
@@ -476,39 +531,45 @@ export async function getWeather(lat: number, lon: number) {
     };
   }
   
-  // Process hourly data - get current hour + next 8 hours
+  // Process hourly data - configurable window
   if (data.hourly && data.hourly.time) {
     // Use Hawaii timezone for comparison
     const now = new Date();
     const hawaiiTime = new Date(now.toLocaleString("en-US", {timeZone: "Pacific/Honolulu"}));
+    const startTime = new Date(hawaiiTime.getTime() + startOffsetHours * 60 * 60 * 1000);
     
-    const currentHourIndex = data.hourly.time.findIndex((t: string) => {
+    let startIndex = data.hourly.time.findIndex((t: string) => {
       const hourTime = new Date(t);
-      return hourTime >= hawaiiTime;
+      return hourTime >= startTime;
     });
     
-    if (currentHourIndex >= 0) {
-      const hoursToShow = 9; // Current hour + 8 future hours
-      const endIndex = Math.min(currentHourIndex + hoursToShow, data.hourly.time.length);
+    if (startIndex < 0) {
+      startIndex = Math.max(0, data.hourly.time.length - hoursToShow);
+    }
+    
+    if (startIndex >= 0) {
+      const endIndex = Math.min(startIndex + hoursToShow, data.hourly.time.length);
       
       // Extract the relevant hours
       const hourlySlice = {
-        time: data.hourly.time.slice(currentHourIndex, endIndex),
-        temperature_2m: data.hourly.temperature_2m.slice(currentHourIndex, endIndex),
-        apparent_temperature: data.hourly.apparent_temperature.slice(currentHourIndex, endIndex),
-        precipitation: data.hourly.precipitation.slice(currentHourIndex, endIndex),
-        wind_speed_10m: data.hourly.wind_speed_10m.slice(currentHourIndex, endIndex),
-        weather_code: data.hourly.weather_code.slice(currentHourIndex, endIndex)
+        time: data.hourly.time.slice(startIndex, endIndex),
+        temperature_2m: data.hourly.temperature_2m.slice(startIndex, endIndex),
+        apparent_temperature: data.hourly.apparent_temperature.slice(startIndex, endIndex),
+        precipitation: data.hourly.precipitation.slice(startIndex, endIndex),
+        wind_speed_10m: data.hourly.wind_speed_10m.slice(startIndex, endIndex),
+        weather_code: data.hourly.weather_code.slice(startIndex, endIndex)
       };
       
+      const hourlyEntries = [];
       // Build formatted hourly forecast
       data.hourly_forecast = hourlySlice.time.map((time: string, i: number) => {
         const hour = new Date(time);
         const weatherDescription = getWeatherDescription(hourlySlice.weather_code[i]);
         
-        return {
+        const entry = {
           time: hour.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'Pacific/Honolulu' }),
           hour_24: hour.getHours(),
+          iso_time: hour.toISOString(),
           temperature_f: celsiusToFahrenheit(hourlySlice.temperature_2m[i]),
           feels_like_f: celsiusToFahrenheit(hourlySlice.apparent_temperature[i]),
           wind_mph: kmhToMph(hourlySlice.wind_speed_10m[i]),
@@ -516,12 +577,14 @@ export async function getWeather(lat: number, lon: number) {
           conditions: weatherDescription,
           is_good_weather: hourlySlice.precipitation[i] < 0.5 && hourlySlice.temperature_2m[i] >= 20 && hourlySlice.temperature_2m[i] <= 32
         };
+        hourlyEntries.push(entry);
+        return entry;
       });
       
       // Calculate summary stats
       const temps = hourlySlice.temperature_2m;
       data.forecast_summary = {
-        period: `Next ${hoursToShow} hours`,
+        period: `${hoursToShow} hour outlook starting ${startTime.toLocaleTimeString('en-US', { hour: 'numeric', timeZone: 'Pacific/Honolulu' })}`,
         high_f: celsiusToFahrenheit(Math.max(...temps)),
         low_f: celsiusToFahrenheit(Math.min(...temps)),
         avg_wind_mph: kmhToMph(hourlySlice.wind_speed_10m.reduce((a: number, b: number) => a + b, 0) / hourlySlice.wind_speed_10m.length),
@@ -532,6 +595,48 @@ export async function getWeather(lat: number, lon: number) {
           .slice(0, 3)
           .map((h: any) => new Date(h.time).toLocaleTimeString('en-US', { hour: 'numeric', timeZone: 'Pacific/Honolulu' }))
       };
+
+      // Provide grouped summaries by day/period for planning scenarios
+      const groupedByDay = new Map<string, typeof hourlyEntries>();
+      hourlyEntries.forEach((entry) => {
+        const date = new Date(entry.iso_time);
+        const hawaiiDate = date.toLocaleDateString('en-US', { timeZone: 'Pacific/Honolulu' });
+        if (!groupedByDay.has(hawaiiDate)) {
+          groupedByDay.set(hawaiiDate, []);
+        }
+        groupedByDay.get(hawaiiDate)!.push(entry);
+      });
+
+      const periodRanges: Array<{ label: string; start: number; end: number }> = [
+        { label: "sunrise", start: 5, end: 8 },
+        { label: "morning", start: 8, end: 12 },
+        { label: "afternoon", start: 12, end: 17 },
+        { label: "evening", start: 17, end: 21 }
+      ];
+
+      data.period_summaries = Array.from(groupedByDay.entries()).map(([day, entriesForDay]) => {
+        const periods = periodRanges.map(({ label, start, end }) => {
+          const block = entriesForDay.filter((entry) => entry.hour_24 >= start && entry.hour_24 < end);
+          if (block.length === 0) {
+            return { label, available: false };
+          }
+          const avgTemp = block.reduce((sum, entry) => sum + entry.temperature_f, 0) / block.length;
+          const avgWind = block.reduce((sum, entry) => sum + entry.wind_mph, 0) / block.length;
+          const rainChance = block.filter((entry) => entry.precipitation_mm > 0.5).length / block.length;
+          const familyFriendly = block.filter((entry) => entry.precipitation_mm < 0.5 && entry.wind_mph < 18 && entry.temperature_f >= 73 && entry.temperature_f <= 86).length / block.length;
+          return {
+            label,
+            available: true,
+            start: block[0].time,
+            end: block[block.length - 1].time,
+            avg_temperature_f: Math.round(avgTemp),
+            avg_wind_mph: Math.round(avgWind),
+            rain_probability: Math.round(rainChance * 100),
+            family_friendly_score: Math.round(familyFriendly * 100)
+          };
+        });
+        return { day, periods };
+      });
     }
   }
   
